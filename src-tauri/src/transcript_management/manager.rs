@@ -47,6 +47,16 @@ impl TranscriptManager {
             })
             .collect()
     }
+    pub fn delete_segment(&mut self, id: &str) -> Result<(), String> {
+    let position = self
+        .segments
+        .iter()
+        .position(|segment| segment.id == id)
+        .ok_or("Transcript segment not found")?;
+
+    self.segments.remove(position);
+    Ok(())
+}
 
     pub fn clear(&mut self) {
         self.segments.clear();

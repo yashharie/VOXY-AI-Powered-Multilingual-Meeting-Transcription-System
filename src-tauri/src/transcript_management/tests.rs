@@ -87,3 +87,23 @@ fn test_txt_export() {
 
     std::fs::remove_file(&file_path).unwrap();
 }
+#[test]
+fn test_delete_transcript_segment() {
+    let mut manager = TranscriptManager::new();
+
+    manager.add_segment(TranscriptSegment::new(
+        "5".to_string(),
+        "Speaker 1".to_string(),
+        "Delete this transcript".to_string(),
+        0.0,
+        5.0,
+        "en".to_string(),
+    ));
+
+    assert_eq!(manager.get_segments().len(), 1);
+
+    manager.delete_segment("5").unwrap();
+
+    assert!(manager.get_segments().is_empty());
+    assert!(manager.delete_segment("5").is_err());
+}
