@@ -91,3 +91,37 @@ export async function onSessionStatusChange(
   }
   return () => {};
 }
+
+// ── Transcript export command ────────────────────────────────────────────────
+
+/**
+ * Ask the Rust backend to save the transcript to a file chosen by the user.
+ * Falls back to browser download when running outside Tauri.
+ */
+export async function exportTranscriptViaBackend(content: string): Promise<void> {
+  if (isTauri()) {
+    await invokeCommand('export_transcript', { content });
+  }
+  // Browser fallback is handled directly in TranscriptActions via downloadTextFile
+}
+
+// ── Diagnostics event listener ────────────────────────────────────────────────
+
+export interface DiagnosticsPayload {
+  latency_ms: number | null;
+  cpu_percent: number | null;
+  ram_mb: number | null;
+}
+
+export async function onDiagnosticsUpdate(
+  callback: (payload: DiagnosticsPayload) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<DiagnosticsPayload>('diagnostics_update', (event) => {
+      callback(event.payload);
+    });
+    return unlisten;
+  }
+  return () => {};
+}
