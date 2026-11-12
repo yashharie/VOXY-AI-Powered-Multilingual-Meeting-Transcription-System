@@ -35,6 +35,12 @@
     editingId = null;
   }
 
+  function highlightMatch(text: string, query: string): string {
+    if (!query.trim()) return text;
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+  }
+
   function handleEditKeydown(event: KeyboardEvent, id: string) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -99,7 +105,7 @@
           class="segment-text {languageClass(segment.language)}"
           title="Double-click to edit"
           on:dblclick={() => startEdit(segment.id, segment.text)}
-        >{segment.text}</p>
+        >{@html highlightMatch(segment.text, $searchQuery)}</p>
         <div class="segment-footer">
           <span class="edit-hint">Double-click to edit</span>
           <button
@@ -269,6 +275,13 @@
   .btn-edit:hover {
     background: var(--color-idle-bg);
     color: var(--color-text);
+  }
+
+  :global(mark) {
+    background: #7c5c00;
+    color: #fefcbf;
+    border-radius: 2px;
+    padding: 0 1px;
   }
 
   /* Multilingual font targeting */
