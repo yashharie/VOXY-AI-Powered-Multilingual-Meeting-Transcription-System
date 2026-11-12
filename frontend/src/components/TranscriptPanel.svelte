@@ -1,16 +1,15 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
-  import { filteredSegments, searchQuery, segments, updateSegmentText } from '../lib/sessionStore';
+  import { filteredSegments, searchQuery, segments, updateSegmentText, appSettings } from '../lib/sessionStore';
   import { formatTime, languageClass, languageLabel } from '../lib/utils';
 
   let panelEl: HTMLElement;
-  let autoScroll = true;
   let editingId: string | null = null;
   let editText = '';
 
   // Auto-scroll to bottom when new segments arrive
   afterUpdate(() => {
-    if (autoScroll && panelEl) {
+    if ($appSettings.autoScroll && panelEl) {
       panelEl.scrollTop = panelEl.scrollHeight;
     }
   });
@@ -18,7 +17,10 @@
   function handleScroll() {
     if (!panelEl) return;
     const atBottom = panelEl.scrollHeight - panelEl.scrollTop - panelEl.clientHeight < 40;
-    autoScroll = atBottom;
+    if (!atBottom) {
+      // User scrolled up — disable auto-scroll until they scroll back down
+      appSettings.update((s) => ({ ...s, autoScroll: false }));
+    }
   }
 
   function startEdit(id: string, text: string) {
@@ -35,12 +37,6 @@
     editingId = null;
   }
 
-  function highlightMatch(text: string, query: string): string {
-    if (!query.trim()) return text;
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
-  }
-
   function handleEditKeydown(event: KeyboardEvent, id: string) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -48,6 +44,26 @@
     } else if (event.key === 'Escape') {
       cancelEdit();
     }
+  }
+
+  /**
+   * Split text into alternating plain/match parts for safe rendering.
+   * No HTML is injected — each part is rendered as a plain text node.
+   */
+  function splitHighlight(text: string, query: string): Array<{ part: string; match: boolean }> {
+    if (!query.trim()) return [{ part: text, match: false }];
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(${escaped})`, 'gi');
+    const parts: Array<{ part: string; match: boolean }> = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) parts.push({ part: text.slice(last, m.index), match: false });
+      parts.push({ part: m[1], match: true });
+      last = m.index + m[1].length;
+    }
+    if (last < text.length) parts.push({ part: text.slice(last), match: false });
+    return parts;
   }
 </script>
 
@@ -81,10 +97,15 @@
 
   {#each $filteredSegments as segment (segment.id)}
     <div class="segment" data-speaker={segment.speaker}>
+
       <div class="segment-meta">
-        <span class="segment-speaker">{segment.speaker}</span>
+        {#if $appSettings.showSpeakerLabels}
+          <span class="segment-speaker">{segment.speaker}</span>
+        {/if}
         <span class="segment-time">{formatTime(segment.start_time)} – {formatTime(segment.end_time)}</span>
-        <span class="segment-lang lang-pill">{languageLabel(segment.language)}</span>
+        {#if $appSettings.showLanguageLabels}
+          <span class="segment-lang lang-pill">{languageLabel(segment.language)}</span>
+        {/if}
       </div>
 
       {#if editingId === segment.id}
@@ -105,7 +126,7 @@
           class="segment-text {languageClass(segment.language)}"
           title="Double-click to edit"
           on:dblclick={() => startEdit(segment.id, segment.text)}
-        >{@html highlightMatch(segment.text, $searchQuery)}</p>
+        >{#each splitHighlight(segment.text, $searchQuery) as chunk}<mark class:is-match={chunk.match}>{chunk.part}</mark>{/each}</p>
         <div class="segment-footer">
           <span class="edit-hint">Double-click to edit</span>
           <button
@@ -116,6 +137,7 @@
           >✎ Edit</button>
         </div>
       {/if}
+
     </div>
   {/each}
 </div>
@@ -209,6 +231,19 @@
     cursor: text;
   }
 
+  /* Safe highlight — uses a class, not injected HTML */
+  :global(mark) {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+  }
+  :global(mark.is-match) {
+    background: #7c5c00;
+    color: #fefcbf;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
   .segment-edit {
     width: 100%;
     font-size: 0.95rem;
@@ -252,9 +287,7 @@
     justify-content: space-between;
   }
 
-  .segment:hover .edit-hint {
-    opacity: 1;
-  }
+  .segment:hover .edit-hint { opacity: 1; }
 
   .btn-edit {
     font-size: 0.68rem;
@@ -268,20 +301,11 @@
     transition: opacity 0.15s;
   }
 
-  .segment:hover .btn-edit {
-    opacity: 1;
-  }
+  .segment:hover .btn-edit { opacity: 1; }
 
   .btn-edit:hover {
     background: var(--color-idle-bg);
     color: var(--color-text);
-  }
-
-  :global(mark) {
-    background: #7c5c00;
-    color: #fefcbf;
-    border-radius: 2px;
-    padding: 0 1px;
   }
 
   /* Multilingual font targeting */

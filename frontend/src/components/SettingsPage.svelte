@@ -3,47 +3,32 @@
     audioDevices,
     selectedDeviceId,
     sessionStatus,
+    appSettings,
   } from '../lib/sessionStore';
-  import { listAudioDevices } from '../lib/tauri';
-  import { onMount } from 'svelte';
 
-  // ── Local settings state ─────────────────────────────────────────────────
-
-  // Microphone (populated from device list; no capture yet — backend pending)
+  // Microphone — backend pending, no capture yet
   let micDeviceId = 'none';
-  let micDevices: Array<{ id: string; name: string }> = [
-    { id: 'none', name: 'None (not configured)' },
-  ];
+  const micDevices = [{ id: 'none', name: 'None (not configured)' }];
 
-  // Language preferences
-  let preferredLanguages: string[] = ['en', 'si', 'ta'];
   const LANGUAGE_OPTIONS = [
     { code: 'en', label: 'English' },
     { code: 'si', label: 'Sinhala' },
     { code: 'ta', label: 'Tamil' },
   ];
 
-  // Transcription preferences
-  let autoScrollEnabled = true;
-  let showLanguageLabels = true;
-  let showSpeakerLabels  = true;
-  let segmentIntervalMs  = 2500;
-
   $: isSessionActive = $sessionStatus === 'active' || $sessionStatus === 'paused';
 
-  onMount(async () => {
-    const devices = await listAudioDevices();
-    audioDevices.set(devices);
-  });
-
   function toggleLanguage(code: string) {
-    if (preferredLanguages.includes(code)) {
-      if (preferredLanguages.length > 1) {
-        preferredLanguages = preferredLanguages.filter((c) => c !== code);
-      }
-    } else {
-      preferredLanguages = [...preferredLanguages, code];
-    }
+    appSettings.update((s) => {
+      const has = s.preferredLanguages.includes(code);
+      if (has && s.preferredLanguages.length <= 1) return s; // keep at least one
+      return {
+        ...s,
+        preferredLanguages: has
+          ? s.preferredLanguages.filter((c) => c !== code)
+          : [...s.preferredLanguages, code],
+      };
+    });
   }
 </script>
 
@@ -108,7 +93,7 @@
         <label class="checkbox-label">
           <input
             type="checkbox"
-            checked={preferredLanguages.includes(lang.code)}
+            checked={$appSettings.preferredLanguages.includes(lang.code)}
             on:change={() => toggleLanguage(lang.code)}
           />
           {lang.label}
@@ -123,21 +108,24 @@
 
     <div class="field">
       <label class="toggle-label">
-        <input type="checkbox" bind:checked={autoScrollEnabled} />
+        <input type="checkbox" checked={$appSettings.autoScroll}
+          on:change={() => appSettings.update(s => ({ ...s, autoScroll: !s.autoScroll }))} />
         Auto-scroll transcript to latest segment
       </label>
     </div>
 
     <div class="field">
       <label class="toggle-label">
-        <input type="checkbox" bind:checked={showSpeakerLabels} />
+        <input type="checkbox" checked={$appSettings.showSpeakerLabels}
+          on:change={() => appSettings.update(s => ({ ...s, showSpeakerLabels: !s.showSpeakerLabels }))} />
         Show speaker labels
       </label>
     </div>
 
     <div class="field">
       <label class="toggle-label">
-        <input type="checkbox" bind:checked={showLanguageLabels} />
+        <input type="checkbox" checked={$appSettings.showLanguageLabels}
+          on:change={() => appSettings.update(s => ({ ...s, showLanguageLabels: !s.showLanguageLabels }))} />
         Show language labels on segments
       </label>
     </div>
@@ -153,7 +141,7 @@
         min={500}
         max={10000}
         step={500}
-        bind:value={segmentIntervalMs}
+        value={2500}
         aria-describedby="interval-hint"
       />
       <span id="interval-hint" class="field-hint">

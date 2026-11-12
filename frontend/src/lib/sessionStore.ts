@@ -56,3 +56,51 @@ export function clearSession(): void {
   errorMessage.set(null);
   searchQuery.set('');
 }
+
+// ── Settings store (persisted to localStorage) ────────────────────────────────
+
+export interface AppSettings {
+  autoScroll: boolean;
+  showSpeakerLabels: boolean;
+  showLanguageLabels: boolean;
+  preferredLanguages: string[];
+}
+
+const SETTINGS_KEY = 'voxy_settings';
+
+function loadSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) return { ...defaultSettings(), ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return defaultSettings();
+}
+
+function defaultSettings(): AppSettings {
+  return {
+    autoScroll: true,
+    showSpeakerLabels: true,
+    showLanguageLabels: true,
+    preferredLanguages: ['en', 'si', 'ta'],
+  };
+}
+
+function createSettingsStore() {
+  const { subscribe, set, update } = writable<AppSettings>(loadSettings());
+  return {
+    subscribe,
+    set(value: AppSettings) {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
+      set(value);
+    },
+    update(fn: (s: AppSettings) => AppSettings) {
+      update((current) => {
+        const next = fn(current);
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+        return next;
+      });
+    },
+  };
+}
+
+export const appSettings = createSettingsStore();

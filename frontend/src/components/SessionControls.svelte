@@ -4,109 +4,17 @@
     selectedDeviceId,
     audioDevices,
     errorMessage,
-    clearSession,
     meetingPlatform,
     sessionName,
-    sessionStartTime,
   } from '../lib/sessionStore';
   import {
-    startSession,
-    pauseSession,
-    resumeSession,
-    stopSession,
-    listAudioDevices,
-    onTranscriptSegment,
-    onSessionStatusChange,
-  } from '../lib/tauri';
-  import { appendSegment } from '../lib/sessionStore';
-  import { nextMockSegment, resetMockSegments } from '../lib/mockData';
-  import type { SessionStatus } from '../types';
-  import { onMount, onDestroy } from 'svelte';
-
-  let unlistenTranscript: (() => void) | null = null;
-  let unlistenStatus: (() => void) | null = null;
-  let mockTimer: ReturnType<typeof setInterval> | null = null;
+    handleStart,
+    handlePause,
+    handleResume,
+    handleStop,
+  } from '../lib/sessionController';
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
-
-  onMount(async () => {
-    const devices = await listAudioDevices();
-    audioDevices.set(devices);
-    if (devices.length > 0) {
-      selectedDeviceId.set(devices.find((d) => d.is_default)?.id ?? devices[0].id);
-    }
-    unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
-      sessionStatus.set(status);
-    });
-  });
-
-  onDestroy(() => {
-    unlistenTranscript?.();
-    unlistenStatus?.();
-    if (mockTimer) clearInterval(mockTimer);
-  });
-
-  async function handleStart() {
-    errorMessage.set(null);
-    clearSession();
-    resetMockSegments();
-    sessionStatus.set('starting');
-    try {
-      await startSession($selectedDeviceId);
-      unlistenTranscript = await onTranscriptSegment((segment) => {
-        appendSegment(segment);
-      });
-      sessionStatus.set('active');
-      sessionStartTime.set(Date.now());
-      if (!('__TAURI__' in window)) {
-        mockTimer = setInterval(() => {
-          if ($sessionStatus === 'active') appendSegment(nextMockSegment());
-        }, 2500);
-      }
-    } catch (err) {
-      errorMessage.set(String(err));
-      sessionStatus.set('idle');
-    }
-  }
-
-  async function handlePause() {
-    try {
-      await pauseSession();
-      sessionStatus.set('paused');
-      if (mockTimer) { clearInterval(mockTimer); mockTimer = null; }
-    } catch (err) {
-      errorMessage.set(String(err));
-    }
-  }
-
-  async function handleResume() {
-    try {
-      await resumeSession();
-      sessionStatus.set('active');
-      if (!('__TAURI__' in window)) {
-        mockTimer = setInterval(() => {
-          if ($sessionStatus === 'active') appendSegment(nextMockSegment());
-        }, 2500);
-      }
-    } catch (err) {
-      errorMessage.set(String(err));
-    }
-  }
-
-  async function handleStop() {
-    sessionStatus.set('stopping');
-    try {
-      await stopSession();
-      if (mockTimer) { clearInterval(mockTimer); mockTimer = null; }
-      unlistenTranscript?.();
-      unlistenTranscript = null;
-      sessionStatus.set('stopped');
-      sessionStartTime.set(null);
-    } catch (err) {
-      errorMessage.set(String(err));
-      sessionStatus.set('stopped');
-    }
-  }
 
   $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
   $: isActive = $sessionStatus === 'active';
@@ -118,7 +26,6 @@
 
   <div class="section-title">Meeting Setup</div>
 
-  <!-- Session name -->
   <div class="field-row">
     <label for="session-name" class="field-label">Session name</label>
     <input
@@ -133,7 +40,6 @@
     />
   </div>
 
-  <!-- Meeting platform -->
   <div class="field-row">
     <label for="platform-select" class="field-label">Platform</label>
     <select
@@ -149,7 +55,6 @@
     </select>
   </div>
 
-  <!-- Audio device -->
   <div class="field-row">
     <label for="device-select" class="field-label">Audio device</label>
     <select
@@ -173,12 +78,10 @@
   <div class="button-row">
     <button
       class="btn btn-start"
-      on:click={handleStart}
+      on:click={() => handleStart($selectedDeviceId)}
       disabled={!isIdle || isBusy}
       aria-label="Start transcription session"
-    >
-      ▶ Start
-    </button>
+    >▶ Start</button>
 
     {#if isActive}
       <button
@@ -186,9 +89,7 @@
         on:click={handlePause}
         disabled={isBusy}
         aria-label="Pause transcription session"
-      >
-        ⏸ Pause
-      </button>
+      >⏸ Pause</button>
     {/if}
 
     {#if isPaused}
@@ -197,9 +98,7 @@
         on:click={handleResume}
         disabled={isBusy}
         aria-label="Resume transcription session"
-      >
-        ▶ Resume
-      </button>
+      >▶ Resume</button>
     {/if}
 
     <button
@@ -207,9 +106,7 @@
       on:click={handleStop}
       disabled={isIdle || isBusy}
       aria-label="Stop transcription session"
-    >
-      ■ Stop
-    </button>
+    >■ Stop</button>
   </div>
 
   {#if $errorMessage}
@@ -223,7 +120,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.65rem;
-    padding: 1rem 1rem;
+    padding: 1rem;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
   }
@@ -266,15 +163,9 @@
     cursor: pointer;
   }
 
-  .field-input::placeholder {
-    color: var(--color-text-muted);
-  }
-
+  .field-input::placeholder { color: var(--color-text-muted); }
   .field-input:disabled,
-  .field-select:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
+  .field-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .button-row {
     display: flex;
@@ -293,7 +184,6 @@
   }
 
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
   .btn-start  { background: var(--color-primary); color: #fff; }
   .btn-pause  { background: var(--color-warn-bg); color: var(--color-warn-fg); }
   .btn-resume { background: var(--color-primary); color: #fff; }
