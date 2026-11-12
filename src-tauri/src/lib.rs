@@ -68,6 +68,8 @@ pub fn run() {
                         tracing::warn!(error = %e, "Cleanup stop_session failed on exit");
                     }
                 }
+                // Safety net: purge any remaining VOXY temp data.
+                core::cleanup::purge_all_voxy_temp();
             }
         })
         .run(tauri::generate_context!())

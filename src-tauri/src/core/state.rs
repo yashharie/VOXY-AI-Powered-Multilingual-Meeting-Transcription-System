@@ -85,8 +85,9 @@ impl AppState {
         // Finish stop (Stopping → Stopped).
         session.finish_stop()?;
 
-        // Delete temporary files.
+        // Delete registered temp files and the whole session temp directory.
         session.cleanup_temp_files();
+        super::cleanup::purge_session_temp_dir(id);
 
         // Release the active session slot.
         let mut active = self.active_session_id.write();

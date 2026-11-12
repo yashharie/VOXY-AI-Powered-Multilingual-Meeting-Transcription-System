@@ -10,11 +10,13 @@
 //!   commands — all #[tauri::command] handlers
 //!   logging  — tracing subscriber initialisation
 
+pub mod cleanup;
 pub mod commands;
 pub mod config;
 pub mod error;
 pub mod events;
 pub mod logging;
+pub mod pipeline;
 pub mod session;
 pub mod state;
 pub mod types;
