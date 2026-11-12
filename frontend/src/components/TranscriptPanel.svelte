@@ -77,7 +77,7 @@
     <div class="segment" data-speaker={segment.speaker}>
       <div class="segment-meta">
         <span class="segment-speaker">{segment.speaker}</span>
-        <span class="segment-time">{formatTime(segment.start_time)}</span>
+        <span class="segment-time">{formatTime(segment.start_time)} – {formatTime(segment.end_time)}</span>
         <span class="segment-lang lang-pill">{languageLabel(segment.language)}</span>
       </div>
 
