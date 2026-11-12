@@ -100,7 +100,15 @@
           title="Double-click to edit"
           on:dblclick={() => startEdit(segment.id, segment.text)}
         >{segment.text}</p>
-        <span class="edit-hint">Double-click to edit</span>
+        <div class="segment-footer">
+          <span class="edit-hint">Double-click to edit</span>
+          <button
+            class="btn-edit"
+            on:click={() => startEdit(segment.id, segment.text)}
+            aria-label="Edit this segment"
+            title="Edit segment"
+          >✎ Edit</button>
+        </div>
       {/if}
     </div>
   {/each}
@@ -232,8 +240,35 @@
     transition: opacity 0.15s;
   }
 
+  .segment-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
   .segment:hover .edit-hint {
     opacity: 1;
+  }
+
+  .btn-edit {
+    font-size: 0.68rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .segment:hover .btn-edit {
+    opacity: 1;
+  }
+
+  .btn-edit:hover {
+    background: var(--color-idle-bg);
+    color: var(--color-text);
   }
 
   /* Multilingual font targeting */
