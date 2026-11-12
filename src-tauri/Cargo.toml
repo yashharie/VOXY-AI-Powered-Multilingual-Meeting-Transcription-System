@@ -38,6 +38,9 @@ tracing-appender = "0.2"
 thiserror = "1"
 anyhow = "1"
 
+# ── Speech recognition ──────────────────────────────────────────────────────────
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+
 # ── Utilities ──────────────────────────────────────────────────────────────────
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

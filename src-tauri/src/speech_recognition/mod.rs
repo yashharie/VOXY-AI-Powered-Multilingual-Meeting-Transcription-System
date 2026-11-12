@@ -1,17 +1,23 @@
 //! Speech recognition module — owned by Member 5.
 //!
-//! Branch: feature/whisper-speech-recognition
-//! Directory: src-tauri/src/speech_recognition/
+//! Integrates [whisper.cpp](https://github.com/ggerganov/whisper.cpp) via the
+//! [`whisper-rs`](https://crates.io/crates/whisper-rs) crate for local,
+//! on-device multilingual speech recognition.
 //!
-//! Stub maintained by Member 2 for compilation. Member 5 owns all
-//! implementation inside this directory.
+//! Supported languages: Sinhala (`si`), Tamil (`ta`), English (`en`),
+//! and auto-detection.
 //!
-//! Integration interface expected by Member 2:
+//! Integration interface expected by the pipeline (`core/pipeline.rs`):
 //!   - `WhisperEngine::new(model_path) -> AppResult<Self>`
-//!   - `WhisperEngine::transcribe(audio: &ProcessedAudio, lang: &str) -> AppResult<RecognitionResult>`
+//!   - `WhisperEngine::transcribe(audio: &ProcessedAudio, lang: &str) -> AppResult<Vec<RecognitionResult>>`
+
+pub mod config;
 
 use crate::audio_processing::ProcessedAudio;
 use crate::core::error::AppResult;
+
+// Re-export key configuration types.
+pub use config::{WhisperLanguage, WhisperModelConfig};
 
 /// A recognized text span with timing metadata.
 #[derive(Debug, Clone)]
