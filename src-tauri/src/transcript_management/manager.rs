@@ -37,16 +37,16 @@ impl TranscriptManager {
     }
 
     pub fn search(&self, keyword: &str) -> Vec<&TranscriptSegment> {
-        self.segments
-            .iter()
-            .filter(|segment| {
-                segment
-                    .text
-                    .to_lowercase()
-                    .contains(&keyword.to_lowercase())
-            })
-            .collect()
-    }
+    let keyword = keyword.to_lowercase();
+
+    self.segments
+        .iter()
+        .filter(|segment| {
+            segment.text.to_lowercase().contains(&keyword)
+                || segment.speaker.to_lowercase().contains(&keyword)
+        })
+        .collect()
+}
     pub fn delete_segment(&mut self, id: &str) -> Result<(), String> {
     let position = self
         .segments

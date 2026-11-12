@@ -107,3 +107,20 @@ fn test_delete_transcript_segment() {
     assert!(manager.get_segments().is_empty());
     assert!(manager.delete_segment("5").is_err());
 }
+#[test]
+fn test_search_by_speaker() {
+    let mut manager = TranscriptManager::new();
+
+    manager.add_segment(TranscriptSegment::new(
+        "6".to_string(),
+        "Speaker 2".to_string(),
+        "Meeting discussion".to_string(),
+        0.0,
+        5.0,
+        "en".to_string(),
+    ));
+
+    assert_eq!(manager.search("speaker 2").len(), 1);
+    assert_eq!(manager.search("SPEAKER 2").len(), 1);
+    assert_eq!(manager.search("unknown").len(), 0);
+}
