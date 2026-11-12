@@ -7,6 +7,8 @@ export const sessionStatus = writable<SessionStatus>('idle');
 export const selectedDeviceId = writable<string>('default');
 export const audioDevices = writable<AudioDevice[]>([]);
 export const errorMessage = writable<string | null>(null);
+export const meetingPlatform = writable<string>('None');
+export const sessionName = writable<string>('');
 
 // ── Transcript state ──────────────────────────────────────────────────────────
 

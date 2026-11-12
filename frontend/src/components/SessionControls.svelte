@@ -5,6 +5,8 @@
     audioDevices,
     errorMessage,
     clearSession,
+    meetingPlatform,
+    sessionName,
   } from '../lib/sessionStore';
   import {
     startSession,
@@ -24,14 +26,14 @@
   let unlistenStatus: (() => void) | null = null;
   let mockTimer: ReturnType<typeof setInterval> | null = null;
 
+  const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
+
   onMount(async () => {
     const devices = await listAudioDevices();
     audioDevices.set(devices);
     if (devices.length > 0) {
       selectedDeviceId.set(devices.find((d) => d.is_default)?.id ?? devices[0].id);
     }
-
-    // Listen for real Tauri status events
     unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
       sessionStatus.set(status);
     });
@@ -48,23 +50,15 @@
     clearSession();
     resetMockSegments();
     sessionStatus.set('starting');
-
     try {
       await startSession($selectedDeviceId);
-
-      // Subscribe to real transcript events
       unlistenTranscript = await onTranscriptSegment((segment) => {
         appendSegment(segment);
       });
-
       sessionStatus.set('active');
-
-      // Start mock feed when not in Tauri (browser dev mode)
       if (!('__TAURI__' in window)) {
         mockTimer = setInterval(() => {
-          if ($sessionStatus === 'active') {
-            appendSegment(nextMockSegment());
-          }
+          if ($sessionStatus === 'active') appendSegment(nextMockSegment());
         }, 2500);
       }
     } catch (err) {
@@ -111,18 +105,53 @@
     }
   }
 
-  $: isIdle    = $sessionStatus === 'idle'    || $sessionStatus === 'stopped';
-  $: isActive  = $sessionStatus === 'active';
-  $: isPaused  = $sessionStatus === 'paused';
-  $: isBusy    = $sessionStatus === 'starting' || $sessionStatus === 'stopping';
+  $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
+  $: isActive = $sessionStatus === 'active';
+  $: isPaused = $sessionStatus === 'paused';
+  $: isBusy   = $sessionStatus === 'starting' || $sessionStatus === 'stopping';
 </script>
 
 <section class="session-controls" aria-label="Transcription session controls">
-  <div class="device-row">
-    <label for="device-select" class="device-label">Audio device</label>
+
+  <div class="section-title">Meeting Setup</div>
+
+  <!-- Session name -->
+  <div class="field-row">
+    <label for="session-name" class="field-label">Session name</label>
+    <input
+      id="session-name"
+      class="field-input"
+      type="text"
+      placeholder="e.g. Sprint Planning"
+      bind:value={$sessionName}
+      disabled={!isIdle}
+      maxlength={80}
+      aria-label="Session name"
+    />
+  </div>
+
+  <!-- Meeting platform -->
+  <div class="field-row">
+    <label for="platform-select" class="field-label">Platform</label>
+    <select
+      id="platform-select"
+      class="field-select"
+      bind:value={$meetingPlatform}
+      disabled={!isIdle}
+      aria-label="Select meeting platform"
+    >
+      {#each PLATFORMS as p}
+        <option value={p}>{p}</option>
+      {/each}
+    </select>
+  </div>
+
+  <!-- Audio device -->
+  <div class="field-row">
+    <label for="device-select" class="field-label">Audio device</label>
     <select
       id="device-select"
-      class="device-select"
+      class="field-select"
       bind:value={$selectedDeviceId}
       disabled={!isIdle}
       aria-label="Select audio output device"
@@ -134,6 +163,9 @@
       {/each}
     </select>
   </div>
+
+  <div class="divider"></div>
+  <div class="section-title">Controls</div>
 
   <div class="button-row">
     <button
@@ -180,33 +212,48 @@
   {#if $errorMessage}
     <p class="error-msg" role="alert">{$errorMessage}</p>
   {/if}
+
 </section>
 
 <style>
   .session-controls {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem 1.25rem;
+    gap: 0.65rem;
+    padding: 1rem 1rem;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
   }
 
-  .device-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .device-label {
-    font-size: 0.8rem;
+  .section-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
     color: var(--color-text-muted);
-    white-space: nowrap;
+    margin-bottom: 0.1rem;
   }
 
-  .device-select {
-    flex: 1;
-    max-width: 320px;
+  .divider {
+    height: 1px;
+    background: var(--color-border);
+    margin: 0.25rem 0;
+  }
+
+  .field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .field-label {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+
+  .field-input,
+  .field-select {
+    width: 100%;
     padding: 0.35rem 0.6rem;
     background: var(--color-input-bg);
     color: var(--color-text);
@@ -216,19 +263,24 @@
     cursor: pointer;
   }
 
-  .device-select:disabled {
+  .field-input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .field-input:disabled,
+  .field-select:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
   .button-row {
     display: flex;
-    gap: 0.6rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
   }
 
   .btn {
-    padding: 0.45rem 1.1rem;
+    padding: 0.45rem 1rem;
     border: none;
     border-radius: 6px;
     font-size: 0.85rem;
@@ -237,10 +289,7 @@
     transition: opacity 0.15s, background 0.15s;
   }
 
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .btn-start  { background: var(--color-primary); color: #fff; }
   .btn-pause  { background: var(--color-warn-bg); color: var(--color-warn-fg); }
