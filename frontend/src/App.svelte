@@ -1,6 +1,7 @@
 <script lang="ts">
   import Header from './components/Header.svelte';
   import SessionControls from './components/SessionControls.svelte';
+  import SessionInfo from './components/SessionInfo.svelte';
   import TranscriptPanel from './components/TranscriptPanel.svelte';
   import TranscriptActions from './components/TranscriptActions.svelte';
   import StatusBar from './components/StatusBar.svelte';
@@ -12,6 +13,7 @@
   <main class="app-main">
     <div class="left-panel">
       <SessionControls />
+      <SessionInfo />
     </div>
 
     <div class="transcript-column">

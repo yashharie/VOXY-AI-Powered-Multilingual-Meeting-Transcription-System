@@ -9,6 +9,7 @@ export const audioDevices = writable<AudioDevice[]>([]);
 export const errorMessage = writable<string | null>(null);
 export const meetingPlatform = writable<string>('None');
 export const sessionName = writable<string>('');
+export const sessionStartTime = writable<number | null>(null);
 
 // ── Transcript state ──────────────────────────────────────────────────────────
 
@@ -28,6 +29,15 @@ export const filteredSegments = derived(
     );
   },
 );
+
+/** Language segment counts derived from current transcript */
+export const languageBreakdown = derived(segments, ($segments) => {
+  const counts: Record<string, number> = { en: 0, si: 0, ta: 0, und: 0 };
+  for (const s of $segments) {
+    counts[s.language] = (counts[s.language] ?? 0) + 1;
+  }
+  return counts;
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

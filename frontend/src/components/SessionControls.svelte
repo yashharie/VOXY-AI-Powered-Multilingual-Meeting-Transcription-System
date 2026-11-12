@@ -7,6 +7,7 @@
     clearSession,
     meetingPlatform,
     sessionName,
+    sessionStartTime,
   } from '../lib/sessionStore';
   import {
     startSession,
@@ -56,6 +57,7 @@
         appendSegment(segment);
       });
       sessionStatus.set('active');
+      sessionStartTime.set(Date.now());
       if (!('__TAURI__' in window)) {
         mockTimer = setInterval(() => {
           if ($sessionStatus === 'active') appendSegment(nextMockSegment());
@@ -99,6 +101,7 @@
       unlistenTranscript?.();
       unlistenTranscript = null;
       sessionStatus.set('stopped');
+      sessionStartTime.set(null);
     } catch (err) {
       errorMessage.set(String(err));
       sessionStatus.set('stopped');
