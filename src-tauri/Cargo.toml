@@ -1,0 +1,53 @@
+[package]
+name = "voxy-audio-capture"
+version = "0.1.0"
+edition = "2021"
+description = "VOXY — Windows WASAPI audio capture module (Member 3)"
+# NOTE: Member 2 owns the final Cargo.toml for the full Tauri application.
+# This file is a standalone manifest so Member 3 can build and test
+# independently. When integrating, Member 2 should merge the [dependencies]
+# block into the main application Cargo.toml and add `audio_capture` as a
+# module in lib.rs.
+
+[lib]
+name = "voxy_audio_capture"
+path = "src/lib.rs"
+
+# ── Feature flags ──────────────────────────────────────────────────────────────
+[features]
+default = []
+# Enable live WASAPI hardware tests. Only use locally on a machine with audio
+# hardware; do not enable on CI.
+wasapi_hw_test = []
+
+# ── Dependencies ───────────────────────────────────────────────────────────────
+[dependencies]
+# Windows WASAPI bindings for Rust.
+# Pinned to a known stable release; Member 2 should confirm the version used
+# in the full Tauri project.
+wasapi = "0.14.0"
+
+# Async runtime (required for mpsc channel and test harness).
+tokio = { version = "1.40.0", features = ["full"] }
+
+# Structured logging.
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+# Serialization (used for config structs shared with Tauri IPC).
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+
+[dev-dependencies]
+# Tokio test macro.
+tokio = { version = "1.40.0", features = ["full", "test-util"] }
+
+[target.'cfg(windows)'.dependencies]
+# wasapi only compiles on Windows; this is enforced by the crate itself.
+# No additional Windows-only deps are needed at this stage.
+
+# ── Build profile ──────────────────────────────────────────────────────────────
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
