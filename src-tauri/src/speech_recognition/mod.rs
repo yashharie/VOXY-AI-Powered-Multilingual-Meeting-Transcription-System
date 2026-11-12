@@ -12,12 +12,13 @@
 //!   - `WhisperEngine::transcribe(audio: &ProcessedAudio, lang: &str) -> AppResult<Vec<RecognitionResult>>`
 
 pub mod config;
+pub mod engine;
+
+// Re-export key types.
+pub use config::{WhisperLanguage, WhisperModelConfig};
+pub use engine::WhisperEngine;
 
 use crate::audio_processing::ProcessedAudio;
-use crate::core::error::AppResult;
-
-// Re-export key configuration types.
-pub use config::{WhisperLanguage, WhisperModelConfig};
 
 /// A recognized text span with timing metadata.
 #[derive(Debug, Clone)]
@@ -27,25 +28,4 @@ pub struct RecognitionResult {
     pub start_ms: u64,
     pub end_ms: u64,
     pub is_partial: bool,
-}
-
-/// Handle to the Whisper inference engine.
-pub struct WhisperEngine;
-
-impl WhisperEngine {
-    /// Load the whisper.cpp model at the given path.
-    pub fn new(_model_path: &std::path::Path) -> AppResult<Self> {
-        tracing::info!("speech_recognition::WhisperEngine::new — stub");
-        Ok(WhisperEngine)
-    }
-
-    /// Transcribe processed audio. Returns one or more recognition results.
-    pub fn transcribe(
-        &self,
-        _audio: &ProcessedAudio,
-        _language_hint: &str,
-    ) -> AppResult<Vec<RecognitionResult>> {
-        tracing::debug!("speech_recognition::transcribe — stub");
-        Ok(Vec::new())
-    }
 }
