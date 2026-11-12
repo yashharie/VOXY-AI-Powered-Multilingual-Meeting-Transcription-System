@@ -100,6 +100,7 @@
           title="Double-click to edit"
           on:dblclick={() => startEdit(segment.id, segment.text)}
         >{segment.text}</p>
+        <span class="edit-hint">Double-click to edit</span>
       {/if}
     </div>
   {/each}
@@ -223,6 +224,17 @@
 
   .btn-save   { background: var(--color-primary); color: #fff; }
   .btn-cancel { background: var(--color-idle-bg); color: var(--color-text-muted); }
+
+  .edit-hint {
+    font-size: 0.65rem;
+    color: var(--color-text-muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .segment:hover .edit-hint {
+    opacity: 1;
+  }
 
   /* Multilingual font targeting */
   :global(.lang-si) { font-family: 'Iskoola Pota', 'Noto Sans Sinhala', sans-serif; }
