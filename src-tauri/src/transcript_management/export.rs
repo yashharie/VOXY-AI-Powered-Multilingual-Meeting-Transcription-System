@@ -8,6 +8,13 @@ pub fn export_to_txt(
     segments: &[TranscriptSegment],
     file_path: &Path,
 ) -> io::Result<()> {
+    let content = format_as_txt(segments)?;
+    fs::write(file_path, content)
+}
+
+/// Format the agreed TXT content without writing a file or changing segments.
+/// Copy and file-export callers can share the same formatting and validation.
+pub fn format_as_txt(segments: &[TranscriptSegment]) -> io::Result<String> {
     // Validate before opening the destination so invalid data cannot truncate
     // an existing export. Float-to-integer casts otherwise hide invalid times.
     if segments.iter().any(|segment| {
@@ -38,5 +45,5 @@ pub fn export_to_txt(
         ));
     }
 
-    fs::write(file_path, content)
+    Ok(content)
 }

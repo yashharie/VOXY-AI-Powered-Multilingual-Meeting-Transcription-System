@@ -1,7 +1,7 @@
 
 use super::manager::TranscriptManager;
 use super::models::TranscriptSegment;
-use super::export::export_to_txt;
+use super::export::{export_to_txt, format_as_txt};
 
 #[test]
 fn test_add_and_edit_transcript() {
@@ -272,4 +272,51 @@ fn export_returns_errors_for_invalid_destinations_without_creating_parents() {
     std::fs::write(&file_parent, "Keep parent").unwrap();
     assert!(export_to_txt(&segments, &file_parent.join("transcript.txt")).is_err());
     assert_eq!(std::fs::read_to_string(file_parent).unwrap(), "Keep parent");
+}
+
+#[test]
+fn txt_formatter_matches_file_export_without_mutating_segments() {
+    let dir = ExportDirectory::new();
+    let path = dir.0.join("transcript.txt");
+    let segments = vec![sample_segment("one", "English ආයුබෝවන් வணக்கம்", 60.5)];
+    let before = segments.clone();
+    let text = format_as_txt(&segments).unwrap();
+    assert_eq!(text,
+        "VOXY Meeting Transcript\n=======================\n\n[01:00] Speaker 1: English ආයුබෝවන් வணக்கம்\n");
+    assert!(!path.exists());
+    export_to_txt(&segments, &path).unwrap();
+    assert_eq!(text.as_bytes(), std::fs::read(path).unwrap());
+    assert_eq!(segments, before);
+    assert_eq!(format_as_txt(&[]).unwrap(),
+        "VOXY Meeting Transcript\n=======================\n\n");
+    assert_eq!(format_as_txt(&[sample_segment("bad", "Invalid", f64::NAN)])
+        .unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn clearing_manager_allows_reuse_without_retaining_old_content_or_removing_export() {
+    let dir = ExportDirectory::new();
+    let path = dir.0.join("saved.txt");
+    let mut manager = TranscriptManager::new();
+    manager.add_segment(sample_segment("one", "Previous session", 0.0));
+    export_to_txt(manager.get_segments(), &path).unwrap();
+    let saved = std::fs::read(&path).unwrap();
+
+    // Exercise only the module's explicit clear operation, not Core lifecycle hooks.
+    manager.clear();
+    manager.clear();
+    assert!(manager.get_segments().is_empty());
+    assert!(manager.search("Previous session").is_empty());
+    assert!(manager.edit_segment("one", "Stale edit").is_err());
+    assert!(manager.delete_segment("one").is_err());
+
+    manager.add_segment(sample_segment("one", "Current session", 0.0));
+    manager.edit_segment("one", "Current session edited").unwrap();
+    assert_eq!(manager.get_segments().len(), 1);
+    assert!(manager.search("Previous session").is_empty());
+    assert_eq!(manager.search("Current session edited").len(), 1);
+    let current = format_as_txt(manager.get_segments()).unwrap();
+    assert!(current.contains("Current session edited"));
+    assert!(!current.contains("Previous session"));
+    assert_eq!(std::fs::read(path).unwrap(), saved);
 }
