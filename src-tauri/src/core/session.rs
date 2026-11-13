@@ -10,6 +10,13 @@ use std::sync::Arc;
 
 use super::error::{AppError, AppResult};
 use super::types::{SessionConfig, SessionInfo, SessionState, TranscriptSegment};
+use crate::transcript_management::{
+    manager::{search_segments, TranscriptManager},
+    models::TranscriptDeletion,
+};
+use crate::transcript_processing::{
+    RecognizedChunk, SpeakerInterval, TranscriptProcessor, TranscriptUpdate,
+};
 
 // ─── Valid state transitions ──────────────────────────────────────────────────
 //
@@ -32,8 +39,15 @@ fn is_valid_transition(from: &SessionState, to: &SessionState) -> bool {
             | (Paused, Active)
             | (Paused, Stopping)
             | (Stopping, Stopped)
+            | (Initializing, Stopping)
+            | (Error, Stopping)
             | (_, Error)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    include!("session/tests.rs");
 }
 
 // ─── Session ──────────────────────────────────────────────────────────────────
@@ -43,8 +57,7 @@ fn is_valid_transition(from: &SessionState, to: &SessionState) -> bool {
 struct SessionInner {
     info: SessionInfo,
     config: SessionConfig,
-    transcript: Vec<TranscriptSegment>,
-    segment_counter: u32,
+    transcript: TranscriptProcessor,
     /// Temporary audio buffer paths or identifiers to clean up on stop.
     temp_files: Vec<std::path::PathBuf>,
 }
@@ -63,11 +76,11 @@ impl Session {
             language = %config.language_hint,
             "Session initialised"
         );
+        let transcript = TranscriptProcessor::new(info.session_id.clone());
         Session(Arc::new(RwLock::new(SessionInner {
             info,
             config,
-            transcript: Vec::new(),
-            segment_counter: 0,
+            transcript,
             temp_files: Vec::new(),
         })))
     }
@@ -91,7 +104,126 @@ impl Session {
     }
 
     pub fn transcript(&self) -> Vec<TranscriptSegment> {
-        self.0.read().transcript.clone()
+        self.canonical_transcript().segments
+    }
+
+    pub fn canonical_transcript(&self) -> crate::transcript_processing::SessionTranscript {
+        self.0.read().transcript.session_transcript()
+    }
+
+    pub fn ingest_recognition(&self, chunk: RecognizedChunk) -> AppResult<TranscriptUpdate> {
+        if chunk.end_ms < chunk.start_ms {
+            return Err(AppError::InvalidTranscript(
+                "Recognition ends before it starts".into(),
+            ));
+        }
+        let mut inner = self.0.write();
+        if matches!(
+            inner.info.state,
+            SessionState::Stopped | SessionState::Error
+        ) {
+            return Err(AppError::TranscriptOperationUnavailable(
+                inner.info.state.to_string(),
+            ));
+        }
+        let segments = inner.transcript.ingest_chunk(chunk);
+        Ok(TranscriptUpdate {
+            session_id: inner.info.session_id.clone(),
+            segments,
+        })
+    }
+
+    pub fn ingest_speakers(&self, intervals: Vec<SpeakerInterval>) -> AppResult<TranscriptUpdate> {
+        if intervals
+            .iter()
+            .any(|interval| interval.end_ms < interval.start_ms)
+        {
+            return Err(AppError::InvalidTranscript(
+                "Speaker interval ends before it starts".into(),
+            ));
+        }
+        let mut inner = self.0.write();
+        if matches!(
+            inner.info.state,
+            SessionState::Stopped | SessionState::Error
+        ) {
+            return Err(AppError::TranscriptOperationUnavailable(
+                inner.info.state.to_string(),
+            ));
+        }
+        let segments = inner.transcript.add_speaker_intervals(intervals);
+        Ok(TranscriptUpdate {
+            session_id: inner.info.session_id.clone(),
+            segments,
+        })
+    }
+
+    pub fn transcript_segment(&self, id: u64) -> AppResult<TranscriptSegment> {
+        if id == 0 {
+            return Err(AppError::InvalidTranscript(
+                "Segment ID must be positive".into(),
+            ));
+        }
+        self.0
+            .read()
+            .transcript
+            .segments
+            .iter()
+            .find(|segment| segment.id == id)
+            .cloned()
+            .ok_or(AppError::TranscriptSegmentNotFound(id))
+    }
+
+    pub fn edit_transcript_segment(&self, id: u64, text: &str) -> AppResult<TranscriptSegment> {
+        let mut inner = self.0.write();
+        Self::require_review_state(&inner.info.state)?;
+        TranscriptManager::new(&mut inner.transcript)
+            .edit_segment(id, text)
+            .map_err(Into::into)
+    }
+
+    pub fn delete_transcript_segment(&self, id: u64) -> AppResult<TranscriptDeletion> {
+        let mut inner = self.0.write();
+        Self::require_review_state(&inner.info.state)?;
+        TranscriptManager::new(&mut inner.transcript).delete_segment(id)?;
+        Ok(TranscriptDeletion {
+            session_id: inner.info.session_id.clone(),
+            segment_id: id,
+        })
+    }
+
+    pub fn search_transcript(&self, keyword: &str) -> Vec<TranscriptSegment> {
+        let inner = self.0.read();
+        search_segments(&inner.transcript.segments, keyword)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    pub fn transcript_text(&self) -> AppResult<String> {
+        Ok(crate::transcript_management::export::format_as_txt(
+            &self.transcript(),
+        )?)
+    }
+
+    pub fn export_transcript(&self, path: &std::path::Path) -> AppResult<()> {
+        crate::transcript_management::export::export_to_txt(&self.transcript(), path)?;
+        Ok(())
+    }
+
+    fn require_review_state(state: &SessionState) -> AppResult<()> {
+        if matches!(
+            state,
+            SessionState::Active | SessionState::Paused | SessionState::Stopped
+        ) {
+            Ok(())
+        } else {
+            Err(AppError::TranscriptOperationUnavailable(state.to_string()))
+        }
+    }
+
+    pub fn fail(&self) {
+        let _ = self.transition(SessionState::Error);
     }
 
     // ── State transitions ──────────────────────────────────────────────────────
@@ -161,16 +293,6 @@ impl Session {
     }
 
     // ── Transcript management ─────────────────────────────────────────────────
-
-    /// Append a finalized segment to the session transcript.
-    pub fn push_segment(&self, mut segment: TranscriptSegment) -> u32 {
-        let mut inner = self.0.write();
-        inner.segment_counter += 1;
-        segment.index = inner.segment_counter;
-        segment.is_partial = false;
-        inner.transcript.push(segment);
-        inner.segment_counter
-    }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
 

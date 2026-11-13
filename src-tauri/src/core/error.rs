@@ -15,6 +15,15 @@ pub enum AppError {
     #[error("Session not found: {0}")]
     SessionNotFound(String),
 
+    #[error("Transcript segment not found: {0}")]
+    TranscriptSegmentNotFound(u64),
+
+    #[error("Invalid transcript data: {0}")]
+    InvalidTranscript(String),
+
+    #[error("Transcript changes are unavailable while session is {0}")]
+    TranscriptOperationUnavailable(String),
+
     #[error("Invalid state transition from {from} to {to}")]
     InvalidStateTransition { from: String, to: String },
 
@@ -55,6 +64,9 @@ impl AppError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::SessionNotFound(_) => "SESSION_NOT_FOUND",
+            Self::TranscriptSegmentNotFound(_) => "TRANSCRIPT_SEGMENT_NOT_FOUND",
+            Self::InvalidTranscript(_) => "INVALID_TRANSCRIPT",
+            Self::TranscriptOperationUnavailable(_) => "TRANSCRIPT_OPERATION_UNAVAILABLE",
             Self::InvalidStateTransition { .. } => "INVALID_STATE_TRANSITION",
             Self::SessionAlreadyActive(_) => "SESSION_ALREADY_ACTIVE",
             Self::InvalidConfig(_) => "INVALID_CONFIG",
@@ -72,8 +84,23 @@ impl AppError {
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            Self::AudioDeviceUnavailable(_) | Self::SpeechRecognitionError(_)
+            Self::AudioDeviceUnavailable(_)
+                | Self::SpeechRecognitionError(_)
+                | Self::TranscriptSegmentNotFound(_)
+                | Self::InvalidTranscript(_)
+                | Self::TranscriptOperationUnavailable(_)
         )
+    }
+}
+
+impl From<crate::transcript_management::models::TranscriptError> for AppError {
+    fn from(error: crate::transcript_management::models::TranscriptError) -> Self {
+        match error {
+            crate::transcript_management::models::TranscriptError::NotFound(id) => {
+                Self::TranscriptSegmentNotFound(id)
+            }
+            other => Self::InvalidTranscript(other.to_string()),
+        }
     }
 }
 
@@ -99,7 +126,6 @@ pub type AppResult<T> = Result<T, AppError>;
 /// We use this wrapper so the frontend receives a structured
 /// `{ Ok: T } | { Err: { code, message } }` envelope.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
 pub enum IpcResult<T> {
     Ok(T),
     Err(IpcError),

@@ -37,12 +37,12 @@
 
       <div class="diag-row">
         <dt>Microphone</dt>
-        <dd class="unavailable">Not configured</dd>
+        <dd>{$audioDevices.find(d => d.id === $selectedDeviceId)?.source === 'Microphone' ? deviceName : 'Not selected'}</dd>
       </div>
 
       <div class="diag-row">
         <dt>AI model</dt>
-        <dd class="unavailable">Not loaded — backend not yet integrated</dd>
+        <dd class="unavailable">{$sessionStatus === 'active' || $sessionStatus === 'paused' ? 'Whisper loaded' : 'Not running'}</dd>
       </div>
 
       <div class="diag-row">
@@ -59,7 +59,7 @@
     <h2 class="section-heading">Performance</h2>
     <p class="diag-note">
       Performance metrics are collected by the Rust backend during a live session.
-      Values below will be populated once the backend is integrated.
+      These counters are not exposed by the current backend.
       Simulated values are not shown here.
     </p>
 

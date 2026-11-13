@@ -151,11 +151,7 @@
 
   <!-- Transcript area -->
   <div class="transcript-area">
-    <TranscriptPanel
-      segments={$sessionStore.transcript}
-      partial={$sessionStore.partialSegment}
-      state={$sessionState}
-    />
+    <TranscriptPanel />
   </div>
 </div>
 

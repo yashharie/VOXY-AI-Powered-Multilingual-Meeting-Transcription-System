@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { initSessionController, destroySessionController } from './lib/sessionController';
+  import { errorMessage } from './lib/sessionStore';
+  onMount(() => { void initSessionController().catch(error => errorMessage.set(String(error))); return destroySessionController; });
   import Header from './components/Header.svelte';
   import SessionControls from './components/SessionControls.svelte';
   import SessionInfo from './components/SessionInfo.svelte';

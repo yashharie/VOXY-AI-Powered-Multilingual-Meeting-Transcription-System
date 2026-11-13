@@ -25,3 +25,7 @@ Thumbs.db
 
 # Test / build artifacts
 coverage/
+test-results/
+playwright-report/
+# Local inference models must not be committed.
+models/

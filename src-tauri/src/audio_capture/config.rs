@@ -18,6 +18,8 @@ impl Default for DeviceSelection {
 /// Configuration passed to [`AudioCaptureManager::start`].
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
+    /// Whether loopback capture is enabled. Disable for microphone-only sessions.
+    pub enable_loopback: bool,
     /// Which output (loopback) device to record from.
     pub loopback_device: DeviceSelection,
 
@@ -41,6 +43,7 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
+            enable_loopback: true,
             loopback_device: DeviceSelection::Default,
             enable_microphone: false,
             microphone_device: DeviceSelection::Default,

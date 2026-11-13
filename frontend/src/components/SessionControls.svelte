@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     sessionStatus,
+    busy,
     selectedDeviceId,
     audioDevices,
     errorMessage,
@@ -16,10 +17,10 @@
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
 
-  $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
+  $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped' || $sessionStatus === 'error';
   $: isActive = $sessionStatus === 'active';
   $: isPaused = $sessionStatus === 'paused';
-  $: isBusy   = $sessionStatus === 'starting' || $sessionStatus === 'stopping';
+  $: isBusy   = $busy || $sessionStatus === 'starting' || $sessionStatus === 'stopping';
 </script>
 
 <section class="session-controls" aria-label="Transcription session controls">

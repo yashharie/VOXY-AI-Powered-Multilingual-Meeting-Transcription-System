@@ -242,13 +242,10 @@ pub fn lang_id_to_enum(lang_id: i32) -> WhisperLanguage {
 ///
 /// Returns the ISO 639-1 code if the full name is not available.
 pub fn lang_full_name(code: &str) -> String {
-    let id = whisper_rs::get_lang_id(code);
-    if id >= 0 {
-        whisper_rs::get_lang_str_full(id)
-            .unwrap_or(code.to_string())
-    } else {
-        code.to_string()
-    }
+    whisper_rs::get_lang_id(code)
+        .and_then(whisper_rs::get_lang_str_full)
+        .unwrap_or(code)
+        .to_owned()
 }
 
 // ─── Model size and quantization ───────────────────────────────────────────────

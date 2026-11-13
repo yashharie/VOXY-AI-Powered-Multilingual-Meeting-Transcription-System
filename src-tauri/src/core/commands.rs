@@ -4,16 +4,64 @@
 //! Commands follow the naming contract defined in frontend/src/lib/ipc.ts.
 //!
 //! Return type convention:
-//!   Commands return `Result<T, String>` where the error string is a JSON
-//!   serialised `IpcError { code, message }`.  The frontend's `unwrap()`
-//!   helper in ipc.ts parses this envelope.
+//!   Commands return an externally tagged `IpcResult<T>`: `{ Ok: value }`
+//!   or `{ Err: { code, message } }`, handled by frontend ipc.ts.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::error::{AppError, AppResult, IpcResult};
 use super::events;
 use super::state::AppState;
-use super::types::{AppVersion, SessionConfig, SessionInfo, TranscriptSegment};
+use super::types::{AppVersion, SessionConfig, SessionInfo};
+
+#[derive(serde::Serialize)]
+pub struct AudioDeviceInfo {
+    id: String,
+    name: String,
+    is_default: bool,
+    source: super::types::AudioSource,
+}
+
+#[tauri::command]
+pub async fn list_audio_devices() -> IpcResult<Vec<AudioDeviceInfo>> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use crate::audio_capture::DeviceEnumerator;
+        let mut devices = Vec::new();
+        for (result, source) in [
+            (
+                DeviceEnumerator::list_output_devices(),
+                super::types::AudioSource::Loopback,
+            ),
+            (
+                DeviceEnumerator::list_input_devices(),
+                super::types::AudioSource::Microphone,
+            ),
+        ] {
+            match result {
+                Ok(found) => devices.extend(found.into_iter().map(|device| AudioDeviceInfo {
+                    id: device.id,
+                    name: format!(
+                        "{} ({})",
+                        device.name,
+                        if source == super::types::AudioSource::Loopback {
+                            "system audio"
+                        } else {
+                            "microphone"
+                        }
+                    ),
+                    is_default: device.is_default,
+                    source: source.clone(),
+                })),
+                Err(error) => tracing::warn!(%error, "Audio device enumeration failed"),
+            }
+        }
+        Ok(devices)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))
+    .and_then(|result: AppResult<Vec<AudioDeviceInfo>>| result)
+    .into()
+}
 
 // ─── Application commands ─────────────────────────────────────────────────────
 
@@ -69,219 +117,215 @@ pub fn init_session(
     result.into()
 }
 
-/// Start (or resume from Initializing) a session — begins audio capture.
-#[tauri::command]
-pub fn start_session(
-    session_id: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
-    tracing::info!(%session_id, "IPC: start_session called");
-    let result: AppResult<SessionInfo> = (|| {
-        let session = state.get_session(&session_id)?;
-        let prev = session.state();
-        let info = session.start()?;
+#[derive(Clone, Copy)]
+enum RuntimeOperation {
+    Start,
+    Pause,
+    Resume,
+    Stop,
+}
 
+async fn runtime_command(
+    app: AppHandle,
+    id: String,
+    operation: RuntimeOperation,
+) -> IpcResult<SessionInfo> {
+    let worker_app = app.clone();
+    let worker_id = id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let previous = state.get_session(&worker_id)?.state();
+        let info = match operation {
+            RuntimeOperation::Start => {
+                let models = state.config.read().models.clone();
+                state.start_runtime(&worker_id, |session| {
+                    super::pipeline::start(session.config(), session, worker_app.clone(), models)
+                })?
+            }
+            RuntimeOperation::Pause => state.pause_runtime(&worker_id)?,
+            RuntimeOperation::Resume => state.resume_runtime(&worker_id)?,
+            RuntimeOperation::Stop => {
+                let stopped = state.stop_session(&worker_id);
+                let info = state.get_session(&worker_id)?.info();
+                if info.state == super::types::SessionState::Stopped {
+                    events::emit_session_cleanup_done(&worker_app, &worker_id);
+                    if stopped.is_err() {
+                        events::emit_session_state_changed(
+                            &worker_app,
+                            &worker_id,
+                            previous.clone(),
+                            info.state.clone(),
+                            None,
+                        );
+                    }
+                }
+                stopped?;
+                info
+            }
+        };
         events::emit_session_state_changed(
-            &app,
-            &session_id,
-            prev,
+            &worker_app,
+            &worker_id,
+            previous,
             info.state.clone(),
             None,
         );
-
-        // TODO (Task 11): start audio_capture and speech_recognition modules here.
-        tracing::info!(%session_id, "Audio capture / ASR start stub — modules not yet integrated");
-
         Ok(info)
-    })();
-
-    if let Err(ref e) = result {
-        events::emit_error(&app, Some(&session_id), e);
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("Runtime command task failed: {error}")))
+    .and_then(|result: AppResult<SessionInfo>| result);
+    if let Err(ref error) = result {
+        events::emit_error(&app, Some(&id), error);
     }
-
     result.into()
 }
 
-/// Pause an active session — halts audio capture.
 #[tauri::command]
-pub fn pause_session(
-    session_id: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
-    tracing::info!(%session_id, "IPC: pause_session called");
-    let result: AppResult<SessionInfo> = (|| {
-        let session = state.get_session(&session_id)?;
-        let prev = session.state();
-        let info = session.pause()?;
-
-        events::emit_session_state_changed(
-            &app,
-            &session_id,
-            prev,
-            info.state.clone(),
-            None,
-        );
-
-        // TODO (Task 11): signal audio_capture to pause.
-
-        Ok(info)
-    })();
-
-    if let Err(ref e) = result {
-        events::emit_error(&app, Some(&session_id), e);
-    }
-
-    result.into()
+pub async fn start_session(session_id: String, app: AppHandle) -> IpcResult<SessionInfo> {
+    runtime_command(app, session_id, RuntimeOperation::Start).await
 }
-
-/// Resume a paused session.
 #[tauri::command]
-pub fn resume_session(
-    session_id: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
-    tracing::info!(%session_id, "IPC: resume_session called");
-    let result: AppResult<SessionInfo> = (|| {
-        let session = state.get_session(&session_id)?;
-        let prev = session.state();
-        let info = session.resume()?;
-
-        events::emit_session_state_changed(
-            &app,
-            &session_id,
-            prev,
-            info.state.clone(),
-            None,
-        );
-
-        // TODO (Task 11): signal audio_capture to resume.
-
-        Ok(info)
-    })();
-
-    if let Err(ref e) = result {
-        events::emit_error(&app, Some(&session_id), e);
-    }
-
-    result.into()
+pub async fn pause_session(session_id: String, app: AppHandle) -> IpcResult<SessionInfo> {
+    runtime_command(app, session_id, RuntimeOperation::Pause).await
 }
-
-/// Stop a session: triggers cleanup and emits cleanup-done event.
 #[tauri::command]
-pub fn stop_session(
-    session_id: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
-    tracing::info!(%session_id, "IPC: stop_session called");
-    let result: AppResult<SessionInfo> = (|| {
-        let session = state.get_session(&session_id)?;
-        let prev = session.state();
-
-        // Emit stopping state immediately so the UI can update.
-        events::emit_session_state_changed(
-            &app,
-            &session_id,
-            prev,
-            super::types::SessionState::Stopping,
-            None,
-        );
-
-        // Run the full stop + cleanup flow.
-        state.stop_session(&session_id)?;
-
-        let info = state.get_session(&session_id)?.info();
-
-        events::emit_session_state_changed(
-            &app,
-            &session_id,
-            super::types::SessionState::Stopping,
-            info.state.clone(),
-            None,
-        );
-
-        events::emit_session_cleanup_done(&app, &session_id);
-
-        Ok(info)
-    })();
-
-    if let Err(ref e) = result {
-        events::emit_error(&app, Some(&session_id), e);
-    }
-
-    result.into()
+pub async fn resume_session(session_id: String, app: AppHandle) -> IpcResult<SessionInfo> {
+    runtime_command(app, session_id, RuntimeOperation::Resume).await
 }
-
+#[tauri::command]
+pub async fn stop_session(session_id: String, app: AppHandle) -> IpcResult<SessionInfo> {
+    runtime_command(app, session_id, RuntimeOperation::Stop).await
+}
 /// Returns the current state snapshot of a session.
 #[tauri::command]
-pub fn get_session_info(
-    session_id: String,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
-    state
-        .get_session(&session_id)
-        .map(|s| s.info())
-        .into()
+pub fn get_session_info(session_id: String, state: State<AppState>) -> IpcResult<SessionInfo> {
+    state.get_session(&session_id).map(|s| s.info()).into()
 }
 
 // ─── Transcript commands ──────────────────────────────────────────────────────
 
-/// Returns all finalized transcript segments for a session.
+/// Returns current canonical segments, preserving partial/final status and IDs.
 #[tauri::command]
 pub fn get_transcript(
     session_id: String,
     state: State<AppState>,
-) -> IpcResult<Vec<TranscriptSegment>> {
+) -> IpcResult<Vec<crate::transcript_processing::TranscriptSegment>> {
     state
         .get_session(&session_id)
-        .map(|s| s.transcript())
+        .map(|s| s.canonical_transcript().segments)
         .into()
 }
 
-/// Saves the transcript to a local file.
-/// Format: "txt" or "json".
-/// Returns the absolute path of the saved file.
-///
-/// Note: full implementation is owned by Member 8 (transcript_management).
-/// This command stub delegates to the management module once integrated.
+/// Retrieve one canonical segment by its stable numeric ID.
+#[tauri::command]
+pub fn get_transcript_segment(
+    session_id: String,
+    segment_id: u64,
+    state: State<AppState>,
+) -> IpcResult<super::types::TranscriptSegment> {
+    state
+        .get_session(&session_id)
+        .and_then(|session| session.transcript_segment(segment_id))
+        .into()
+}
+
+#[tauri::command]
+pub fn edit_transcript_segment(
+    session_id: String,
+    segment_id: u64,
+    text: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> IpcResult<super::types::TranscriptSegment> {
+    let result = state
+        .get_session(&session_id)
+        .and_then(|session| session.edit_transcript_segment(segment_id, &text));
+    match &result {
+        Ok(segment) => events::emit_transcript_update(
+            &app,
+            crate::transcript_processing::TranscriptUpdate {
+                session_id: session_id.clone(),
+                segments: vec![segment.clone()],
+            },
+        ),
+        Err(error) => events::emit_error(&app, Some(&session_id), error),
+    }
+    result.into()
+}
+
+#[tauri::command]
+pub fn delete_transcript_segment(
+    session_id: String,
+    segment_id: u64,
+    app: AppHandle,
+    state: State<AppState>,
+) -> IpcResult<crate::transcript_management::models::TranscriptDeletion> {
+    let result = state
+        .get_session(&session_id)
+        .and_then(|session| session.delete_transcript_segment(segment_id));
+    match &result {
+        Ok(deletion) => events::emit_transcript_deleted(&app, deletion.clone()),
+        Err(error) => events::emit_error(&app, Some(&session_id), error),
+    }
+    result.into()
+}
+
+#[tauri::command]
+pub fn search_transcript(
+    session_id: String,
+    query: String,
+    state: State<AppState>,
+) -> IpcResult<Vec<super::types::TranscriptSegment>> {
+    state
+        .get_session(&session_id)
+        .map(|session| session.search_transcript(&query))
+        .into()
+}
+
+/// Return the same UTF-8 TXT content used by file export and clipboard copy.
+#[tauri::command]
+pub fn get_transcript_text(session_id: String, state: State<AppState>) -> IpcResult<String> {
+    state
+        .get_session(&session_id)
+        .and_then(|session| session.transcript_text())
+        .into()
+}
+
+/// Write to the explicit TXT destination selected by the frontend's native dialog.
 #[tauri::command]
 pub fn save_transcript(
     session_id: String,
     format: String,
+    file_path: String,
     state: State<AppState>,
 ) -> IpcResult<String> {
-    tracing::info!(%session_id, %format, "IPC: save_transcript called");
-    let result: AppResult<String> = (|| {
-        let session = state.get_session(&session_id)?;
-        let segments = session.transcript();
+    save_transcript_file(&state, &session_id, &format, &file_path).into()
+}
 
-        // Stub — full file-dialog + write logic belongs to Member 8.
-        // For now we write to %TEMP%\voxy_transcript_<id>.<ext>.
-        let ext = if format == "json" { "json" } else { "txt" };
-        let filename = format!("voxy_transcript_{}.{}", &session_id[..8], ext);
-        let path = std::env::temp_dir().join(&filename);
+pub(crate) fn save_transcript_file(
+    state: &AppState,
+    session_id: &str,
+    format: &str,
+    file_path: &str,
+) -> AppResult<String> {
+    let session = state.get_session(session_id)?;
+    if !format.eq_ignore_ascii_case("txt") {
+        return Err(AppError::InvalidTranscript(
+            "Only TXT export is supported".into(),
+        ));
+    }
+    let path = std::path::Path::new(file_path);
+    if file_path.is_empty() || !path.is_absolute() {
+        return Err(AppError::InvalidTranscript(
+            "Export destination must be an absolute file path".into(),
+        ));
+    }
+    session.export_transcript(path)?;
+    Ok(file_path.to_owned())
+}
 
-        let content = if format == "json" {
-            serde_json::to_string_pretty(&segments)?
-        } else {
-            segments
-                .iter()
-                .map(|s| {
-                    let mins = (s.start_time / 60.0) as u32;
-                    let secs = (s.start_time % 60.0) as u32;
-                    format!("[{:02}:{:02}] {}", mins, secs, s.text)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        std::fs::write(&path, content)?;
-        tracing::info!(?path, "Transcript saved");
-        Ok(path.to_string_lossy().to_string())
-    })();
-
-    result.into()
+#[cfg(test)]
+mod tests {
+    include!("commands/tests.rs");
 }
