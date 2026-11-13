@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import Header from './components/Header.svelte';
   import SessionControls from './components/SessionControls.svelte';
   import SessionInfo from './components/SessionInfo.svelte';
@@ -17,7 +17,7 @@
 
   <div class="app-body">
 
-    <!-- ΓöÇΓöÇ Sidebar navigation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ -->
+    <!-- ── Sidebar navigation ───────────────────────────── -->
     <nav class="sidebar" aria-label="Main navigation">
       <button
         class="nav-btn"
@@ -25,7 +25,7 @@
         on:click={() => activeView = 'session'}
         aria-current={activeView === 'session' ? 'page' : undefined}
       >
-        ≡ƒÄÖ Session
+        🎙 Session
       </button>
       <button
         class="nav-btn"
@@ -33,7 +33,7 @@
         on:click={() => activeView = 'settings'}
         aria-current={activeView === 'settings' ? 'page' : undefined}
       >
-        ΓÜÖ Settings
+        ⚙ Settings
       </button>
       <button
         class="nav-btn"
@@ -41,11 +41,11 @@
         on:click={() => activeView = 'diagnostics'}
         aria-current={activeView === 'diagnostics' ? 'page' : undefined}
       >
-        ≡ƒöì Diagnostics
+        🔍 Diagnostics
       </button>
     </nav>
 
-    <!-- ΓöÇΓöÇ Main content area ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ -->
+    <!-- ── Main content area ────────────────────────────── -->
     <main class="app-main">
 
       {#if activeView === 'session'}
@@ -85,7 +85,7 @@
     overflow: hidden;
   }
 
-  /* ΓöÇΓöÇ Sidebar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+  /* ── Sidebar ─────────────────────────────────────────── */
   .sidebar {
     width: 130px;
     flex-shrink: 0;
@@ -124,7 +124,7 @@
     font-weight: 600;
   }
 
-  /* ΓöÇΓöÇ Main content ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+  /* ── Main content ─────────────────────────────────────── */
   .app-main {
     display: flex;
     flex: 1;
