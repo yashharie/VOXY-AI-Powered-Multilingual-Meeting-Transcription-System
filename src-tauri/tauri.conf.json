@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "identifier": "com.tesseract.voxy",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm run dev --prefix frontend",
+    "beforeBuildCommand": "npm run build --prefix frontend"
   },
   "app": {
     "withGlobalTauri": true,

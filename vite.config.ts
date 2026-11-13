@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
-import { sveltekit } from "@sveltejs/vite-plugin-svelte";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+  plugins: [svelte()],
 
   // Tauri dev server host
   server: {
@@ -16,7 +16,6 @@ export default defineConfig(async () => ({
       port: 1421,
     },
     watch: {
-      // 3. tell vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
   },
