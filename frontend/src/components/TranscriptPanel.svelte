@@ -1,208 +1,316 @@
 <script lang="ts">
-  import { afterUpdate } from "svelte";
-  import type { SessionState, TranscriptSegment } from "$lib/types";
+  import { afterUpdate } from 'svelte';
+  import { filteredSegments, searchQuery, segments, updateSegmentText, appSettings } from '../lib/sessionStore';
+  import { formatTime, languageClass, languageLabel } from '../lib/utils';
 
-  export let segments: TranscriptSegment[] = [];
-  export let partial: TranscriptSegment | null = null;
-  export let state: SessionState = "Idle";
+  let panelEl: HTMLElement;
+  let editingId: string | null = null;
+  let editText = '';
 
-  let scrollEl: HTMLDivElement;
-  let autoScroll = true;
-
+  // Auto-scroll to bottom when new segments arrive
   afterUpdate(() => {
-    if (autoScroll && scrollEl) {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
+    if ($appSettings.autoScroll && panelEl) {
+      panelEl.scrollTop = panelEl.scrollHeight;
     }
   });
 
-  function formatTime(seconds: number): string {
-    const m = Math.floor(seconds / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = Math.floor(seconds % 60)
-      .toString()
-      .padStart(2, "0");
-    return `${m}:${s}`;
+  function handleScroll() {
+    if (!panelEl) return;
+    const atBottom = panelEl.scrollHeight - panelEl.scrollTop - panelEl.clientHeight < 40;
+    if (!atBottom) {
+      // User scrolled up — disable auto-scroll until they scroll back down
+      appSettings.update((s) => ({ ...s, autoScroll: false }));
+    }
+  }
+
+  function startEdit(id: string, text: string) {
+    editingId = id;
+    editText = text;
+  }
+
+  function commitEdit(id: string) {
+    if (editText.trim()) updateSegmentText(id, editText.trim());
+    editingId = null;
+  }
+
+  function cancelEdit() {
+    editingId = null;
+  }
+
+  function handleEditKeydown(event: KeyboardEvent, id: string) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      commitEdit(id);
+    } else if (event.key === 'Escape') {
+      cancelEdit();
+    }
+  }
+
+  /**
+   * Split text into alternating plain/match parts for safe rendering.
+   * No HTML is injected — each part is rendered as a plain text node.
+   */
+  function splitHighlight(text: string, query: string): Array<{ part: string; match: boolean }> {
+    if (!query.trim()) return [{ part: text, match: false }];
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(${escaped})`, 'gi');
+    const parts: Array<{ part: string; match: boolean }> = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) parts.push({ part: text.slice(last, m.index), match: false });
+      parts.push({ part: m[1], match: true });
+      last = m.index + m[1].length;
+    }
+    if (last < text.length) parts.push({ part: text.slice(last), match: false });
+    return parts;
   }
 </script>
 
-<div class="transcript-panel">
-  {#if segments.length === 0 && !partial}
-    <div class="empty-state">
-      {#if state === "Idle" || state === "Stopped"}
-        <p class="empty-icon">📝</p>
-        <p>No transcript yet. Start a session to begin.</p>
-      {:else if state === "Initializing"}
-        <p class="empty-icon">⏳</p>
-        <p>Session ready. Press Start Recording to begin.</p>
-      {:else if state === "Active"}
-        <p class="empty-icon">🎙</p>
-        <p>Listening… transcript will appear here.</p>
-      {:else if state === "Paused"}
-        <p class="empty-icon">⏸</p>
-        <p>Recording paused.</p>
-      {/if}
-    </div>
-  {:else}
-    <div
-      class="segments-container"
-      bind:this={scrollEl}
-      on:scroll={() => {
-        const atBottom =
-          scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <
-          40;
-        autoScroll = atBottom;
-      }}
-    >
-      {#each segments as seg (seg.index)}
-        <div class="segment" class:partial={seg.is_partial}>
-          <div class="segment-meta">
-            <span class="time">{formatTime(seg.start_time)}</span>
-            {#if seg.speaker}
-              <span class="speaker">{seg.speaker}</span>
-            {/if}
-            <span class="lang">{seg.language}</span>
-          </div>
-          <p class="segment-text">{seg.text}</p>
-        </div>
-      {/each}
+<div class="transcript-toolbar">
+  <input
+    class="search-input"
+    type="search"
+    placeholder="Search transcript…"
+    bind:value={$searchQuery}
+    aria-label="Search transcript"
+  />
+  <span class="segment-count" aria-live="polite">
+    {$segments.length} segment{$segments.length !== 1 ? 's' : ''}
+  </span>
+</div>
 
-      {#if partial}
-        <div class="segment partial live">
-          <div class="segment-meta">
-            <span class="time">{formatTime(partial.start_time)}</span>
-            {#if partial.speaker}
-              <span class="speaker">{partial.speaker}</span>
-            {/if}
-            <span class="lang">{partial.language}</span>
-            <span class="live-badge">LIVE</span>
-          </div>
-          <p class="segment-text">{partial.text}<span class="cursor">|</span></p>
+<div
+  class="transcript-panel"
+  bind:this={panelEl}
+  on:scroll={handleScroll}
+  role="log"
+  aria-label="Live transcript"
+  aria-live="polite"
+  aria-relevant="additions"
+>
+  {#if $filteredSegments.length === 0}
+    <p class="empty-state">
+      {$searchQuery ? 'No segments match your search.' : 'Transcript will appear here once the session starts.'}
+    </p>
+  {/if}
+
+  {#each $filteredSegments as segment (segment.id)}
+    <div class="segment" data-speaker={segment.speaker}>
+
+      <div class="segment-meta">
+        {#if $appSettings.showSpeakerLabels}
+          <span class="segment-speaker">{segment.speaker}</span>
+        {/if}
+        <span class="segment-time">{formatTime(segment.start_time)} – {formatTime(segment.end_time)}</span>
+        {#if $appSettings.showLanguageLabels}
+          <span class="segment-lang lang-pill">{languageLabel(segment.language)}</span>
+        {/if}
+      </div>
+
+      {#if editingId === segment.id}
+        <textarea
+          class="segment-edit {languageClass(segment.language)}"
+          bind:value={editText}
+          on:keydown={(e) => handleEditKeydown(e, segment.id)}
+          aria-label="Edit transcript segment"
+          rows={3}
+        ></textarea>
+        <div class="edit-actions">
+          <button class="btn-sm btn-save" on:click={() => commitEdit(segment.id)}>Save</button>
+          <button class="btn-sm btn-cancel" on:click={cancelEdit}>Cancel</button>
+        </div>
+      {:else}
+        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+        <p
+          class="segment-text {languageClass(segment.language)}"
+          title="Double-click to edit"
+          on:dblclick={() => startEdit(segment.id, segment.text)}
+        >{#each splitHighlight(segment.text, $searchQuery) as chunk}<mark class:is-match={chunk.match}>{chunk.part}</mark>{/each}</p>
+        <div class="segment-footer">
+          <span class="edit-hint">Double-click to edit</span>
+          <button
+            class="btn-edit"
+            on:click={() => startEdit(segment.id, segment.text)}
+            aria-label="Edit this segment"
+            title="Edit segment"
+          >✎ Edit</button>
         </div>
       {/if}
+
     </div>
-  {/if}
+  {/each}
 </div>
 
 <style>
+  .transcript-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .search-input {
+    flex: 1;
+    padding: 0.35rem 0.7rem;
+    background: var(--color-input-bg);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    font-size: 0.85rem;
+  }
+
+  .segment-count {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
   .transcript-panel {
-    height: 100%;
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    gap: 0.75rem;
   }
 
   .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 10px;
-    color: var(--color-text-secondary);
-    font-size: 14px;
-  }
-
-  .empty-icon {
-    font-size: 36px;
-  }
-
-  .segments-container {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: 0.9rem;
+    margin-top: 2rem;
   }
 
   .segment {
-    background: var(--color-surface);
+    background: var(--color-card);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: 10px 14px;
-    transition: border-color 0.2s;
-  }
-
-  .segment:hover {
-    border-color: var(--color-accent);
-  }
-
-  .segment.partial {
-    border-color: var(--color-warning);
-    opacity: 0.85;
-  }
-
-  .segment.live {
-    animation: fadein 0.3s ease-in;
-  }
-
-  @keyframes fadein {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 0.85;
-    }
+    border-radius: 8px;
+    padding: 0.65rem 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .segment-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
-  .time {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-text-secondary);
-  }
-
-  .speaker {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--color-accent);
-    background: rgba(108, 99, 255, 0.12);
-    padding: 1px 6px;
-    border-radius: 10px;
-  }
-
-  .lang {
-    font-size: 10px;
-    color: var(--color-text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  .live-badge {
-    font-size: 9px;
+  .segment-speaker {
+    font-size: 0.75rem;
     font-weight: 700;
-    color: var(--color-recording);
-    background: rgba(239, 83, 80, 0.15);
-    padding: 1px 5px;
-    border-radius: 3px;
-    letter-spacing: 1px;
-    animation: blink 1s step-start infinite;
+    color: var(--color-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
-  @keyframes blink {
-    50% {
-      opacity: 0.4;
-    }
+  .segment-time {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .lang-pill {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: var(--color-idle-bg);
+    color: var(--color-text-muted);
   }
 
   .segment-text {
-    font-size: 14px;
+    margin: 0;
+    font-size: 0.95rem;
     line-height: 1.6;
-    color: var(--color-text-primary);
-    user-select: text;
+    color: var(--color-text);
+    cursor: text;
   }
 
-  .cursor {
-    animation: blink 0.8s step-start infinite;
-    color: var(--color-accent);
-    font-weight: 100;
+  /* Safe highlight — uses a class, not injected HTML */
+  :global(mark) {
+    background: transparent;
+    color: inherit;
+    padding: 0;
   }
+  :global(mark.is-match) {
+    background: #7c5c00;
+    color: #fefcbf;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  .segment-edit {
+    width: 100%;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    padding: 0.4rem 0.6rem;
+    background: var(--color-input-bg);
+    color: var(--color-text);
+    border: 1px solid var(--color-primary);
+    border-radius: 6px;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+
+  .edit-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .btn-sm {
+    padding: 0.25rem 0.65rem;
+    font-size: 0.75rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .btn-save   { background: var(--color-primary); color: #fff; }
+  .btn-cancel { background: var(--color-idle-bg); color: var(--color-text-muted); }
+
+  .edit-hint {
+    font-size: 0.65rem;
+    color: var(--color-text-muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .segment-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .segment:hover .edit-hint { opacity: 1; }
+
+  .btn-edit {
+    font-size: 0.68rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .segment:hover .btn-edit { opacity: 1; }
+
+  .btn-edit:hover {
+    background: var(--color-idle-bg);
+    color: var(--color-text);
+  }
+
+  /* Multilingual font targeting */
+  :global(.lang-si) { font-family: 'Noto Sans Sinhala', 'Iskoola Pota', sans-serif; }
+  :global(.lang-ta) { font-family: 'Noto Sans Tamil', 'Latha', sans-serif; }
+  :global(.lang-en) { font-family: inherit; }
+  :global(.lang-und){ font-family: inherit; color: var(--color-text-muted); }
 </style>

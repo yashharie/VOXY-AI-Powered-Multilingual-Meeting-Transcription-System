@@ -1,112 +1,149 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { sessionStore } from "./stores/session";
-  import SessionView from "./components/SessionView.svelte";
-  import StatusBar from "./components/StatusBar.svelte";
+  import Header from './components/Header.svelte';
+  import SessionControls from './components/SessionControls.svelte';
+  import SessionInfo from './components/SessionInfo.svelte';
+  import TranscriptPanel from './components/TranscriptPanel.svelte';
+  import TranscriptActions from './components/TranscriptActions.svelte';
+  import SettingsPage from './components/SettingsPage.svelte';
+  import DiagnosticsPage from './components/DiagnosticsPage.svelte';
+  import StatusBar from './components/StatusBar.svelte';
 
-  let ready = false;
-
-  onMount(async () => {
-    await sessionStore.initialize();
-    ready = true;
-  });
+  type View = 'session' | 'settings' | 'diagnostics';
+  let activeView: View = 'session';
 </script>
 
-<main class="app-shell">
-  <header class="app-header">
-    <div class="app-brand">
-      <span class="brand-icon">🎙</span>
-      <span class="brand-name">VOXY</span>
-      <span class="brand-tagline">AI Live Transcription</span>
-    </div>
-    {#if ready}
-      <StatusBar />
-    {/if}
-  </header>
+<div class="app-shell">
+  <Header />
 
-  <div class="app-content">
-    {#if ready}
-      <SessionView />
-    {:else}
-      <div class="loading">
-        <div class="loading-spinner"></div>
-        <p>Initialising VOXY…</p>
-      </div>
-    {/if}
+  <div class="app-body">
+
+    <!-- ── Sidebar navigation ───────────────────────────── -->
+    <nav class="sidebar" aria-label="Main navigation">
+      <button
+        class="nav-btn"
+        class:active={activeView === 'session'}
+        on:click={() => activeView = 'session'}
+        aria-current={activeView === 'session' ? 'page' : undefined}
+      >
+        🎙 Session
+      </button>
+      <button
+        class="nav-btn"
+        class:active={activeView === 'settings'}
+        on:click={() => activeView = 'settings'}
+        aria-current={activeView === 'settings' ? 'page' : undefined}
+      >
+        ⚙ Settings
+      </button>
+      <button
+        class="nav-btn"
+        class:active={activeView === 'diagnostics'}
+        on:click={() => activeView = 'diagnostics'}
+        aria-current={activeView === 'diagnostics' ? 'page' : undefined}
+      >
+        🔍 Diagnostics
+      </button>
+    </nav>
+
+    <!-- ── Main content area ────────────────────────────── -->
+    <main class="app-main">
+
+      {#if activeView === 'session'}
+        <div class="left-panel">
+          <SessionControls />
+          <SessionInfo />
+        </div>
+        <div class="transcript-column">
+          <TranscriptPanel />
+          <TranscriptActions />
+        </div>
+
+      {:else if activeView === 'settings'}
+        <SettingsPage />
+
+      {:else if activeView === 'diagnostics'}
+        <DiagnosticsPage />
+      {/if}
+
+    </main>
   </div>
-</main>
+
+  <StatusBar />
+</div>
 
 <style>
   .app-shell {
     display: flex;
     flex-direction: column;
     height: 100vh;
-    background: var(--color-bg);
+    overflow: hidden;
   }
 
-  .app-header {
+  .app-body {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 20px;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    flex-shrink: 0;
-  }
-
-  .app-brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .brand-icon {
-    font-size: 20px;
-  }
-
-  .brand-name {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--color-accent);
-    letter-spacing: 2px;
-  }
-
-  .brand-tagline {
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-  }
-
-  .app-content {
     flex: 1;
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
   }
 
-  .loading {
+  /* ── Sidebar ─────────────────────────────────────────── */
+  .sidebar {
+    width: 130px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.75rem 0.5rem;
+    background: var(--color-surface);
+    border-right: 1px solid var(--color-border);
+  }
+
+  .nav-btn {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 16px;
-    color: var(--color-text-secondary);
+    gap: 0.4rem;
+    padding: 0.55rem 0.75rem;
+    background: transparent;
+    color: var(--color-text-muted);
+    border: none;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s, color 0.15s;
+    width: 100%;
   }
 
-  .loading-spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid var(--color-border);
-    border-top-color: var(--color-accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+  .nav-btn:hover {
+    background: var(--color-idle-bg);
+    color: var(--color-text);
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .nav-btn.active {
+    background: var(--color-idle-bg);
+    color: var(--color-primary);
+    font-weight: 600;
+  }
+
+  /* ── Main content ─────────────────────────────────────── */
+  .app-main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .left-panel {
+    width: 260px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .transcript-column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 </style>
