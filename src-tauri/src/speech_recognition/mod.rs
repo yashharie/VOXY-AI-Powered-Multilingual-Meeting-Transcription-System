@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod evaluation;
 
 // Re-export key types.
 pub use config::{
@@ -21,6 +22,7 @@ pub use config::{
     MultilingualConfig, QuantizationType, WhisperLanguage, WhisperModelConfig,
 };
 pub use engine::WhisperEngine;
+pub use evaluation::{AccuracyMetrics, HardwareAssessment, ReferenceEvaluation};
 
 use crate::audio_processing::ProcessedAudio;
 
