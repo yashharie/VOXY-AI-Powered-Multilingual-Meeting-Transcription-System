@@ -494,3 +494,174 @@ impl ModelEvaluationConfig {
         descriptors
     }
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── WhisperLanguage ──────────────────────────────────────────────────────
+
+    #[test]
+    fn from_hint_handles_all_codes() {
+        assert_eq!(WhisperLanguage::from_hint("si"), WhisperLanguage::Sinhala);
+        assert_eq!(WhisperLanguage::from_hint("SI"), WhisperLanguage::Sinhala);
+        assert_eq!(WhisperLanguage::from_hint("sin"), WhisperLanguage::Sinhala);
+        assert_eq!(WhisperLanguage::from_hint("sinhala"), WhisperLanguage::Sinhala);
+
+        assert_eq!(WhisperLanguage::from_hint("ta"), WhisperLanguage::Tamil);
+        assert_eq!(WhisperLanguage::from_hint("TA"), WhisperLanguage::Tamil);
+        assert_eq!(WhisperLanguage::from_hint("tam"), WhisperLanguage::Tamil);
+        assert_eq!(WhisperLanguage::from_hint("tamil"), WhisperLanguage::Tamil);
+
+        assert_eq!(WhisperLanguage::from_hint("en"), WhisperLanguage::English);
+        assert_eq!(WhisperLanguage::from_hint("EN"), WhisperLanguage::English);
+        assert_eq!(WhisperLanguage::from_hint("eng"), WhisperLanguage::English);
+        assert_eq!(WhisperLanguage::from_hint("english"), WhisperLanguage::English);
+
+        assert_eq!(WhisperLanguage::from_hint("auto"), WhisperLanguage::Auto);
+        assert_eq!(WhisperLanguage::from_hint(""), WhisperLanguage::Auto);
+        assert_eq!(WhisperLanguage::from_hint("unknown"), WhisperLanguage::Auto);
+        assert_eq!(WhisperLanguage::from_hint("zh"), WhisperLanguage::Auto);
+    }
+
+    #[test]
+    fn language_code_returns_correct_bcp47() {
+        assert_eq!(WhisperLanguage::Sinhala.code(), Some("si"));
+        assert_eq!(WhisperLanguage::Tamil.code(), Some("ta"));
+        assert_eq!(WhisperLanguage::English.code(), Some("en"));
+        assert_eq!(WhisperLanguage::Auto.code(), None);
+    }
+
+    #[test]
+    fn language_display_matches_code() {
+        assert_eq!(WhisperLanguage::Sinhala.to_string(), "si");
+        assert_eq!(WhisperLanguage::Tamil.to_string(), "ta");
+        assert_eq!(WhisperLanguage::English.to_string(), "en");
+        assert_eq!(WhisperLanguage::Auto.to_string(), "auto");
+    }
+
+    // ── ModelDescriptor / file name generation ───────────────────────────────
+
+    #[test]
+    fn file_name_generates_correct_ggml_name() {
+        let d = ModelDescriptor {
+            size: ModelSize::Base,
+            quantization: QuantizationType::F16,
+            multilingual: true,
+        };
+        assert_eq!(d.file_name(), "ggml-base.bin");
+
+        let d = ModelDescriptor {
+            size: ModelSize::Small,
+            quantization: QuantizationType::Q5_0,
+            multilingual: true,
+        };
+        assert_eq!(d.file_name(), "ggml-small-q5_0.bin");
+
+        let d = ModelDescriptor {
+            size: ModelSize::Base,
+            quantization: QuantizationType::F16,
+            multilingual: false,
+        };
+        assert_eq!(d.file_name(), "ggml-base.en.bin");
+
+        let d = ModelDescriptor {
+            size: ModelSize::LargeV3,
+            quantization: QuantizationType::Q5_0,
+            multilingual: true,
+        };
+        assert_eq!(d.file_name(), "ggml-large-v3-q5_0.bin");
+
+        let d = ModelDescriptor {
+            size: ModelSize::Tiny,
+            quantization: QuantizationType::Q8_0,
+            multilingual: false,
+        };
+        assert_eq!(d.file_name(), "ggml-tiny.en-q8_0.bin");
+    }
+
+    #[test]
+    fn model_size_id_matches_expected() {
+        assert_eq!(ModelSize::Tiny.id(), "tiny");
+        assert_eq!(ModelSize::Base.id(), "base");
+        assert_eq!(ModelSize::Small.id(), "small");
+        assert_eq!(ModelSize::Medium.id(), "medium");
+        assert_eq!(ModelSize::LargeV3.id(), "large-v3");
+    }
+
+    #[test]
+    fn quantization_suffix_correct() {
+        assert_eq!(QuantizationType::F16.suffix(), "");
+        assert_eq!(QuantizationType::Q5_0.suffix(), "-q5_0");
+        assert_eq!(QuantizationType::Q8_0.suffix(), "-q8_0");
+        assert_eq!(QuantizationType::Q4_0.suffix(), "-q4_0");
+    }
+
+    // ── Language validation ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_sinhala_on_english_only_model() {
+        let result = validate_language_for_model(&WhisperLanguage::Sinhala, false);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("multilingual"));
+    }
+
+    #[test]
+    fn validate_rejects_tamil_on_english_only_model() {
+        let result = validate_language_for_model(&WhisperLanguage::Tamil, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_accepts_english_on_english_only_model() {
+        assert!(validate_language_for_model(&WhisperLanguage::English, false).is_ok());
+        assert!(validate_language_for_model(&WhisperLanguage::Auto, false).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_all_languages_on_multilingual_model() {
+        assert!(validate_language_for_model(&WhisperLanguage::Sinhala, true).is_ok());
+        assert!(validate_language_for_model(&WhisperLanguage::Tamil, true).is_ok());
+        assert!(validate_language_for_model(&WhisperLanguage::English, true).is_ok());
+        assert!(validate_language_for_model(&WhisperLanguage::Auto, true).is_ok());
+    }
+
+    // ── WhisperModelConfig ───────────────────────────────────────────────────
+
+    #[test]
+    fn model_config_defaults_are_sensible() {
+        let config = WhisperModelConfig::new("/tmp/model.bin");
+        assert_eq!(config.language, WhisperLanguage::Auto);
+        assert_eq!(config.n_threads, 0);
+        assert!(!config.translate);
+        assert!(config.suppress_output);
+    }
+
+    #[test]
+    fn model_config_builder_methods() {
+        let config = WhisperModelConfig::new("/tmp/model.bin")
+            .with_language(WhisperLanguage::Sinhala)
+            .with_threads(4);
+        assert_eq!(config.language, WhisperLanguage::Sinhala);
+        assert_eq!(config.n_threads, 4);
+    }
+
+    // ── MultilingualConfig ───────────────────────────────────────────────────
+
+    #[test]
+    fn multilingual_config_fixed_disables_auto_detect() {
+        let cfg = MultilingualConfig::fixed(WhisperLanguage::Tamil);
+        assert!(!cfg.auto_detect);
+        assert_eq!(cfg.fallback_language, WhisperLanguage::Tamil);
+    }
+
+    #[test]
+    fn multilingual_config_auto_with_fallback() {
+        let cfg = MultilingualConfig::auto_with_fallback(WhisperLanguage::Sinhala);
+        assert!(cfg.auto_detect);
+        assert_eq!(cfg.fallback_language, WhisperLanguage::Sinhala);
+    }
+}
