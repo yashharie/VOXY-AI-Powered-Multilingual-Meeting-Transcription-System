@@ -1,0 +1,71 @@
+/* ── CSS custom properties (design tokens) ──────────────────────────────── */
+:root {
+  /* Base palette — dark theme */
+  --color-bg:           #0f1117;
+  --color-surface:      #161b22;
+  --color-card:         #1c2231;
+  --color-border:       #2d3748;
+  --color-input-bg:     #1a2235;
+
+  /* Text */
+  --color-text:         #e2e8f0;
+  --color-text-muted:   #718096;
+
+  /* Brand / accent */
+  --color-primary:      #4f8ef7;
+
+  /* Semantic colours */
+  --color-active-bg:    #1a3a2a;
+  --color-active-fg:    #48bb78;
+  --color-paused-bg:    #2d2a1a;
+  --color-paused-fg:    #ecc94b;
+  --color-idle-bg:      #1e2535;
+  --color-idle-fg:      #718096;
+  --color-warn-bg:      #2d2a1a;
+  --color-warn-fg:      #ecc94b;
+  --color-danger:       #fc8181;
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+
+/* ── Focus rings (accessibility) ─────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* ── Utility ─────────────────────────────────────────────────────────────── */
+button, select, input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
