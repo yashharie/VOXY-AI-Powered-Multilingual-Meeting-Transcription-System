@@ -1,162 +1,102 @@
-/**
- * Session controller — persistent application-level session lifecycle manager.
- *
- * Lives at the App root level and is never destroyed by navigation.
- * All session state mutations happen here; components only read from
- * the stores and call the exported functions.
- */
-
-import {
-  sessionStatus,
-  selectedDeviceId,
-  errorMessage,
-  sessionStartTime,
-  segments,
-  appendSegment,
-  clearSession,
-} from './sessionStore';
-import {
-  startSession,
-  pauseSession,
-  resumeSession,
-  stopSession,
-  listAudioDevices,
-  onTranscriptSegment,
-  onSessionStatusChange,
-} from './tauri';
-import { audioDevices } from './sessionStore';
-import { nextMockSegment, resetMockSegments } from './mockData';
-import type { SessionStatus } from '../types';
+/** One app-level controller and one frontend transcript cache. Backend owns data. */
 import { get } from 'svelte/store';
-
-// ── Internal state (not reactive stores — lives here only) ────────────────────
-
-let _unlistenTranscript: (() => void) | null = null;
-let _unlistenStatus: (() => void) | null = null;
-let _mockTimer: ReturnType<typeof setInterval> | null = null;
-let _initialized = false;
-
-// ── Initialise once at app startup ────────────────────────────────────────────
-
+import * as ipc from './ipc';
+import * as events from './events';
+import { isTauri } from './tauri';
+import { sessionStatus, sessionInfo, busy, audioLevel, audioDevices, selectedDeviceId, errorMessage, sessionStartTime, segments, searchQuery, searchMatches, clearSession, upsertSegments, removeSegment, acknowledgeEdit, applySnapshot, transcriptRevision } from './sessionStore';
+import type { SessionConfig, SessionInfo, SessionState } from './types';
+let initialized: Promise<void> | null = null;
+let unlisteners: (() => void)[] = [];
+let subscriptions: (() => void)[] = [];
+let searchGeneration = 0;
+let configured: SessionConfig | null = null;
+let pendingId: string | null = null;
+const currentId = () => get(sessionInfo)?.session_id ?? null;
+function status(state: SessionState) { return state === 'Initializing' ? 'starting' : state.toLowerCase() as 'idle' | 'active' | 'paused' | 'stopping' | 'stopped' | 'error'; }
+function acceptInfo(info: SessionInfo) { sessionInfo.set(info); sessionStatus.set(status(info.state)); }
+export function configureSession(config: SessionConfig) { configured = config; }
 export async function initSessionController(): Promise<void> {
-  if (_initialized) return;
-  _initialized = true;
-
-  // Load audio devices
-  const devices = await listAudioDevices();
-  audioDevices.set(devices);
-  if (devices.length > 0) {
-    const current = get(selectedDeviceId);
-    // Only set default if no device is already selected or current is unknown
-    const known = devices.find((d) => d.id === current);
-    if (!known) {
-      selectedDeviceId.set(
-        devices.find((d) => d.is_default)?.id ?? devices[0].id,
-      );
-    }
-  }
-
-  // Listen for backend session status events
-  _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
-    sessionStatus.set(status);
-  });
+  if (initialized) return initialized;
+  if (!isTauri()) { errorMessage.set('Open VOXY in the desktop app to transcribe and export.'); return; }
+  initialized = (async () => {
+    try {
+      unlisteners.push(await events.onTranscriptSegment(payload => { if (payload.sessionId === currentId()) upsertSegments(payload.segments); }));
+      unlisteners.push(await events.onTranscriptDeleted(payload => { if (payload.sessionId === currentId()) removeSegment(payload.segmentId); }));
+      unlisteners.push(await events.onSessionStateChanged(payload => {
+        const info = get(sessionInfo);
+        if (info?.session_id === payload.session_id) acceptInfo({ ...info, state: payload.new_state });
+      }));
+      unlisteners.push(await events.onError(payload => {
+        if (!payload.session_id || payload.session_id === currentId() || payload.session_id === pendingId) errorMessage.set(`[${payload.code}] ${payload.message}`);
+      }));
+      unlisteners.push(await events.onAudioLevel(payload => { if (payload.session_id === currentId()) audioLevel.set(payload.level); }));
+      unlisteners.push(await events.onSessionCleanupDone(id => { if (id === currentId()) audioLevel.set(0); }));
+      const devices = await ipc.listAudioDevices(); audioDevices.set(devices);
+      if (!devices.some(d => d.id === get(selectedDeviceId))) selectedDeviceId.set(devices.find(d => d.is_default)?.id ?? devices[0]?.id ?? 'default');
+      subscriptions.push(searchQuery.subscribe(() => { searchMatches.set(null); void refreshSearch(); }));
+      subscriptions.push(segments.subscribe(() => { void refreshSearch(); }));
+    } catch (error) { destroySessionController(); throw error; }
+  })();
+  return initialized;
 }
-
-// ── Session commands ──────────────────────────────────────────────────────────
-
-export async function handleStart(deviceId: string): Promise<void> {
-  errorMessage.set(null);
-
-  // Snapshot current segments in case start fails — restore them
-  const previousSegments = get(segments);
-
-  // Clear only after confirming we can proceed
+export function destroySessionController() {
+  for (const stop of unlisteners) stop(); unlisteners = [];
+  for (const stop of subscriptions) stop(); subscriptions = [];
+  initialized = null; searchGeneration++;
+}
+export async function refreshTranscript(): Promise<void> {
+  const id = currentId(); if (!id) return;
+  const requestedAt = transcriptRevision(); const snapshot = await ipc.getTranscript(id);
+  if (id === currentId()) applySnapshot(snapshot, requestedAt);
+}
+export async function refreshSearch(): Promise<void> {
+  const version = ++searchGeneration; const query = get(searchQuery); const id = currentId();
+  if (!query.trim() || !id) { searchMatches.set(null); return; }
+  try { const found = await ipc.searchTranscript(id, query); if (version === searchGeneration && id === currentId()) searchMatches.set(found.map(s => s.id)); }
+  catch (error) { if (version === searchGeneration) errorMessage.set(String(error)); }
+}
+export async function handleStart(deviceId = get(selectedDeviceId)): Promise<void> {
+  if (get(busy)) return; busy.set(true); errorMessage.set(null);
+  const previous = get(sessionInfo); const previousStatus = get(sessionStatus);
   sessionStatus.set('starting');
-
   try {
-    await startSession(deviceId);
-
-    // Start succeeded — now clear previous session data
-    clearSession();
-    resetMockSegments();
-
-    _unlistenTranscript = await onTranscriptSegment((segment) => {
-      appendSegment(segment);
-    });
-
-    sessionStatus.set('active');
-    sessionStartTime.set(Date.now());
-
-    // Mock feed for browser development (no Tauri shell)
-    if (!('__TAURI__' in window)) {
-      _mockTimer = setInterval(() => {
-        if (get(sessionStatus) === 'active') {
-          appendSegment(nextMockSegment());
-        }
-      }, 2500);
-    }
-  } catch (err) {
-    // Restore previous transcript — start failed, nothing was cleared yet
-    errorMessage.set(String(err));
-    sessionStatus.set('idle');
-    // Segments were not cleared (clearSession was not called before failure)
-    segments.set(previousSegments);
-  }
+    if (!isTauri()) throw new Error('Transcription requires the VOXY desktop app.');
+    await initSessionController();
+    if (previous?.state === 'Error') { try { await ipc.stopSession(previous.session_id); } catch { /* backend stop can report a final inference error after cleanup */ } }
+    const device = get(audioDevices).find(d => d.id === deviceId);
+    const config = configured ?? { audio_source: device?.source ?? 'Loopback', device_id: device?.id ?? null, language_hint: 'auto', enable_diarization: false, show_partial_results: true };
+    const candidate = await ipc.initSession(config); pendingId = candidate.session_id;
+    const started = await ipc.startSession(candidate.session_id);
+    // No previous review data is removed before backend start succeeds.
+    clearSession(); acceptInfo(started); pendingId = null; sessionStartTime.set(Date.now());
+    await refreshTranscript(); acceptInfo(await ipc.getSessionInfo(started.session_id));
+  } catch (error) {
+    if (pendingId) { try { await ipc.stopSession(pendingId); } catch { /* preserve original startup error */ } pendingId = null; }
+    if (currentId() === previous?.session_id || (!previous && !currentId())) { sessionStatus.set(previousStatus); }
+    errorMessage.set(String(error));
+  } finally { busy.set(false); }
 }
-
-export async function handlePause(): Promise<void> {
+async function lifecycle(action: 'pause' | 'resume' | 'stop') {
+  const id = currentId(); if (!id || get(busy)) return;
+  busy.set(true); errorMessage.set(null);
   try {
-    await pauseSession();
-    sessionStatus.set('paused');
-    _stopMockTimer();
-  } catch (err) {
-    errorMessage.set(String(err));
-    // Status remains active — backend did not confirm pause
-  }
+    const info = await ({ pause: ipc.pauseSession, resume: ipc.resumeSession, stop: ipc.stopSession }[action])(id);
+    acceptInfo(info); await refreshTranscript();
+    if (action === 'stop') sessionStartTime.set(null);
+  } catch (error) {
+    errorMessage.set(String(error));
+    try { acceptInfo(await ipc.getSessionInfo(id)); await refreshTranscript(); } catch { /* keep the operation error */ }
+  } finally { busy.set(false); }
 }
-
-export async function handleResume(): Promise<void> {
-  try {
-    await resumeSession();
-    sessionStatus.set('active');
-
-    if (!('__TAURI__' in window)) {
-      _mockTimer = setInterval(() => {
-        if (get(sessionStatus) === 'active') {
-          appendSegment(nextMockSegment());
-        }
-      }, 2500);
-    }
-  } catch (err) {
-    errorMessage.set(String(err));
-    // Status remains paused — backend did not confirm resume
-  }
+export const handlePause = () => lifecycle('pause');
+export const handleResume = () => lifecycle('resume');
+export const handleStop = () => lifecycle('stop');
+export async function editSegment(id: number, text: string) {
+  const session = currentId(); if (!session) throw new Error('No current session');
+  acknowledgeEdit(await ipc.editTranscriptSegment(session, id, text)); await refreshSearch();
 }
-
-export async function handleStop(): Promise<void> {
-  // Record the pre-stop status so we can restore it if stop fails
-  const previousStatus = get(sessionStatus);
-  sessionStatus.set('stopping');
-
-  try {
-    await stopSession();
-    _stopMockTimer();
-    _unlistenTranscript?.();
-    _unlistenTranscript = null;
-    sessionStatus.set('stopped');
-    sessionStartTime.set(null);
-  } catch (err) {
-    errorMessage.set(String(err));
-    // Restore previous status — stop failed, session may still be running
-    sessionStatus.set(previousStatus);
-  }
+export async function deleteSegment(id: number) {
+  const session = currentId(); if (!session) throw new Error('No current session');
+  await ipc.deleteTranscriptSegment(session, id); removeSegment(id); await refreshSearch();
 }
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-function _stopMockTimer(): void {
-  if (_mockTimer) {
-    clearInterval(_mockTimer);
-    _mockTimer = null;
-  }
-}
+export async function transcriptText() { const id = currentId(); if (!id) throw new Error('No current session'); return ipc.getTranscriptText(id); }

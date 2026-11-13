@@ -1,10 +1,12 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
-  import { filteredSegments, searchQuery, segments, updateSegmentText, appSettings } from '../lib/sessionStore';
+  import { filteredSegments, searchQuery, segments, errorMessage, appSettings } from '../lib/sessionStore';
   import { formatTime, languageClass, languageLabel } from '../lib/utils';
 
+  import { editSegment, deleteSegment } from '../lib/sessionController';
+  let saving = false;
   let panelEl: HTMLElement;
-  let editingId: string | null = null;
+  let editingId: number | null = null;
   let editText = '';
 
   // Auto-scroll to bottom when new segments arrive
@@ -23,21 +25,28 @@
     }
   }
 
-  function startEdit(id: string, text: string) {
+  function startEdit(id: number, text: string) {
     editingId = id;
     editText = text;
   }
 
-  function commitEdit(id: string) {
-    if (editText.trim()) updateSegmentText(id, editText.trim());
-    editingId = null;
+  async function commitEdit(id: number) {
+    if (saving) return;
+    saving = true;
+    try { await editSegment(id, editText); editingId = null; }
+    catch (error) { errorMessage.set(String(error)); }
+    finally { saving = false; }
+  }
+  async function remove(id: number) {
+    try { await deleteSegment(id); if (editingId === id) editingId = null; }
+    catch (error) { errorMessage.set(String(error)); }
   }
 
   function cancelEdit() {
     editingId = null;
   }
 
-  function handleEditKeydown(event: KeyboardEvent, id: string) {
+  function handleEditKeydown(event: KeyboardEvent, id: number) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       commitEdit(id);
@@ -100,9 +109,9 @@
 
       <div class="segment-meta">
         {#if $appSettings.showSpeakerLabels}
-          <span class="segment-speaker">{segment.speaker}</span>
+          <span class="segment-speaker">{segment.speaker ?? 'Unknown speaker'}</span>
         {/if}
-        <span class="segment-time">{formatTime(segment.start_time)} – {formatTime(segment.end_time)}</span>
+        <span class="segment-time">{formatTime(segment.startMs / 1000)} – {formatTime(segment.endMs / 1000)}</span>
         {#if $appSettings.showLanguageLabels}
           <span class="segment-lang lang-pill">{languageLabel(segment.language)}</span>
         {/if}
@@ -117,7 +126,7 @@
           rows={3}
         ></textarea>
         <div class="edit-actions">
-          <button class="btn-sm btn-save" on:click={() => commitEdit(segment.id)}>Save</button>
+          <button class="btn-sm btn-save" disabled={saving} on:click={() => commitEdit(segment.id)}>Save</button>
           <button class="btn-sm btn-cancel" on:click={cancelEdit}>Cancel</button>
         </div>
       {:else}
@@ -135,6 +144,7 @@
             aria-label="Edit this segment"
             title="Edit segment"
           >✎ Edit</button>
+          <button class="btn-edit" on:click={() => remove(segment.id)} aria-label="Delete this segment">Delete</button>
         </div>
       {/if}
 

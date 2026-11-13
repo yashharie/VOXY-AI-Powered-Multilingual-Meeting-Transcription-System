@@ -6,9 +6,9 @@
     appSettings,
   } from '../lib/sessionStore';
 
-  // Microphone — backend pending, no capture yet
-  let micDeviceId = 'none';
-  const micDevices = [{ id: 'none', name: 'None (not configured)' }];
+  // One selected capture device is used; microphone and loopback are not mixed.
+  const micDeviceId = 'none';
+  const micDevices = [{ id: 'none', name: 'Choose a microphone in Audio device above' }];
 
   const LANGUAGE_OPTIONS = [
     { code: 'en', label: 'English' },
@@ -40,7 +40,7 @@
 
     <div class="field">
       <label for="settings-device" class="field-label">
-        Output device (system audio capture)
+        Audio device (system audio or microphone)
       </label>
       <select
         id="settings-device"
@@ -58,7 +58,7 @@
       {#if isSessionActive}
         <span id="device-hint" class="field-hint">Stop the session to change the audio device.</span>
       {:else}
-        <span id="device-hint" class="field-hint">WASAPI loopback capture. Changes take effect at the next session start.</span>
+        <span id="device-hint" class="field-hint">One capture source at a time. Changes take effect at the next session start.</span>
       {/if}
     </div>
 
@@ -69,8 +69,8 @@
       <select
         id="settings-mic"
         class="field-select"
-        bind:value={micDeviceId}
-        disabled={isSessionActive}
+        value={micDeviceId}
+        disabled
         aria-describedby="mic-hint"
       >
         {#each micDevices as d (d.id)}
@@ -78,7 +78,7 @@
         {/each}
       </select>
       <span id="mic-hint" class="field-hint">
-        Microphone capture requires backend support. Not available until the audio engine is integrated.
+        Microphone capture is selected using Audio device above. Simultaneous microphone and system audio mixing is not supported.
       </span>
     </div>
   </section>
@@ -132,20 +132,18 @@
 
     <div class="field">
       <label for="segment-interval" class="field-label">
-        Mock segment interval (ms) — development only
+        Whisper model (default location)
       </label>
       <input
         id="segment-interval"
         class="field-input"
-        type="number"
-        min={500}
-        max={10000}
-        step={500}
-        value={2500}
+        type="text"
+        value="models/ggml-base.bin"
+        readonly
         aria-describedby="interval-hint"
       />
       <span id="interval-hint" class="field-hint">
-        Controls how often mock segments appear during browser development. Has no effect when connected to the Tauri backend.
+        Supply a multilingual whisper.cpp model at this location, or set models.whisper_model_path in the VOXY application configuration. Model files are not included.
       </span>
     </div>
   </section>
@@ -159,7 +157,7 @@
       <div class="about-row"><dt>Team</dt><dd>Tesseract</dd></div>
       <div class="about-row"><dt>Frontend</dt><dd>Svelte + TypeScript + Vite</dd></div>
       <div class="about-row"><dt>Desktop shell</dt><dd>Tauri 2</dd></div>
-      <div class="about-row"><dt>Status</dt><dd>Development — backend not yet integrated</dd></div>
+      <div class="about-row"><dt>Status</dt><dd>Desktop backend connected</dd></div>
     </dl>
   </section>
 

@@ -1,28 +1,24 @@
 <script lang="ts">
-  import { segments } from '../lib/sessionStore';
-  import { buildExportText, downloadTextFile } from '../lib/utils';
-
+  import { onDestroy } from 'svelte';
+  import { segments, sessionInfo, errorMessage } from '../lib/sessionStore';
+  import { copyTranscript, exportTranscript } from '../lib/transcriptActions';
   let copyFeedback = '';
+  let exporting = false;
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
-
+  onDestroy(() => { if (copyTimer) clearTimeout(copyTimer); });
   async function handleCopy() {
-    if ($segments.length === 0) return;
-    const text = buildExportText($segments);
-    try {
-      await navigator.clipboard.writeText(text);
-      copyFeedback = 'Copied!';
-    } catch {
-      copyFeedback = 'Copy failed';
-    }
+    if (!$sessionInfo || !$segments.length) return;
+    try { await copyTranscript($sessionInfo.session_id); copyFeedback = 'Copied!'; }
+    catch (error) { copyFeedback = 'Copy failed'; errorMessage.set(String(error)); }
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => { copyFeedback = ''; }, 2000);
   }
-
-  function handleExport() {
-    if ($segments.length === 0) return;
-    const text = buildExportText($segments);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadTextFile(`voxy-transcript-${timestamp}.txt`, text);
+  async function handleExport() {
+    if (!$sessionInfo || !$segments.length || exporting) return;
+    exporting = true;
+    try { await exportTranscript($sessionInfo.session_id); }
+    catch (error) { errorMessage.set(String(error)); }
+    finally { exporting = false; }
   }
 </script>
 

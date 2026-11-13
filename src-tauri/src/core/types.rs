@@ -4,7 +4,7 @@
 //! Serialize + Deserialize so they can be serialised to JSON automatically.
 //! TypeScript counterparts live in frontend/src/lib/types.ts — keep in sync.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -61,13 +61,10 @@ pub struct SessionInfo {
 }
 
 impl SessionInfo {
-    pub fn new(config: &SessionConfig) -> Self {
+    pub fn new(_config: &SessionConfig) -> Self {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
-        let display_name = format!(
-            "Session {}",
-            now.format("%Y-%m-%d %H:%M")
-        );
+        let display_name = format!("Session {}", now.format("%Y-%m-%d %H:%M"));
         Self {
             session_id: id,
             state: SessionState::Initializing,
@@ -82,6 +79,8 @@ impl SessionInfo {
 /// User-supplied configuration for a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub audio_source: AudioSource,
     /// Language hint for Whisper, e.g. "si", "ta", "en", "auto".
     pub language_hint: String,
@@ -92,6 +91,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
+            device_id: None,
             audio_source: AudioSource::Loopback,
             language_hint: "auto".to_string(),
             enable_diarization: false,
@@ -113,26 +113,7 @@ pub enum AudioSource {
 
 // ─── Transcript ───────────────────────────────────────────────────────────────
 
-/// A single recognized text segment produced by the speech recognition module.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TranscriptSegment {
-    /// Auto-incrementing position within the session.
-    pub index: u32,
-    /// Recognized text content.
-    pub text: String,
-    /// Session-relative start offset in seconds.
-    pub start_time: f64,
-    /// Session-relative end offset in seconds.
-    pub end_time: f64,
-    /// BCP-47 language code detected by Whisper, e.g. "si", "ta", "en".
-    pub language: String,
-    /// Generic speaker label (e.g. "Speaker 1") or None if diarization is off.
-    pub speaker: Option<String>,
-    /// True while this is a provisional / streaming update.
-    pub is_partial: bool,
-    /// Wall-clock time when the segment was produced (ISO 8601).
-    pub timestamp: DateTime<Utc>,
-}
+pub use crate::transcript_processing::types::TranscriptSegment;
 
 // ─── Application metadata ─────────────────────────────────────────────────────
 

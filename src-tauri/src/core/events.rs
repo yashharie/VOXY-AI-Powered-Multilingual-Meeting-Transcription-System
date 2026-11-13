@@ -8,6 +8,23 @@ use tauri::{AppHandle, Emitter};
 
 use super::error::AppError;
 use super::types::{SessionState, TranscriptSegment};
+use crate::transcript_processing::{TranscriptUpdate, TRANSCRIPT_UPDATE_EVENT};
+
+/// Canonical session-scoped updates, including partial/final and late labels.
+pub fn emit_transcript_update(app: &AppHandle, update: TranscriptUpdate) {
+    if let Err(error) = app.emit(TRANSCRIPT_UPDATE_EVENT, update) {
+        tracing::warn!(%error, "Failed to emit transcript update");
+    }
+}
+
+pub fn emit_transcript_deleted(
+    app: &AppHandle,
+    deletion: crate::transcript_management::models::TranscriptDeletion,
+) {
+    if let Err(error) = app.emit("transcript:deleted", deletion) {
+        tracing::warn!(%error, "Failed to emit transcript deletion");
+    }
+}
 
 // ─── Event channel names ──────────────────────────────────────────────────────
 
@@ -75,11 +92,7 @@ pub fn emit_session_state_changed(
 }
 
 /// Emit a transcript segment (partial or final).
-pub fn emit_transcript_segment(
-    app: &AppHandle,
-    session_id: &str,
-    segment: TranscriptSegment,
-) {
+pub fn emit_transcript_segment(app: &AppHandle, session_id: &str, segment: TranscriptSegment) {
     let payload = TranscriptSegmentPayload {
         session_id: session_id.to_string(),
         segment,

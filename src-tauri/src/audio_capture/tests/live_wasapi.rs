@@ -13,17 +13,14 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use crate::audio_capture::{
-    capture::AudioCaptureManager,
-    config::CaptureConfig,
-    device::DeviceEnumerator,
+    capture::AudioCaptureManager, config::CaptureConfig, device::DeviceEnumerator,
     types::AudioSource,
 };
 
 /// Confirm that at least one output device is discoverable.
 #[test]
 fn can_enumerate_output_devices() {
-    let devices = DeviceEnumerator::list_output_devices()
-        .expect("Should enumerate output devices");
+    let devices = DeviceEnumerator::list_output_devices().expect("Should enumerate output devices");
     assert!(!devices.is_empty(), "Expected at least one output device");
     for d in &devices {
         println!("  Output: {} (id={})", d.name, d.id);
@@ -33,9 +30,13 @@ fn can_enumerate_output_devices() {
 /// Confirm that the system default output device is reported.
 #[test]
 fn default_output_device_is_present() {
-    let device = DeviceEnumerator::default_output_device()
-        .expect("Should have a default output device");
-    println!("Default output: {} ({}Hz)", device.name, device.native_sample_rate_hz.unwrap_or(0));
+    let device =
+        DeviceEnumerator::default_output_device().expect("Should have a default output device");
+    println!(
+        "Default output: {} ({}Hz)",
+        device.name,
+        device.native_sample_rate_hz.unwrap_or(0)
+    );
     assert!(!device.name.is_empty());
 }
 
@@ -51,8 +52,7 @@ async fn loopback_capture_delivers_chunks() {
         ..CaptureConfig::default()
     };
 
-    let (handle, mut rx) =
-        AudioCaptureManager::start(config).expect("Capture should start");
+    let (handle, mut rx) = AudioCaptureManager::start(config).expect("Capture should start");
 
     let result = timeout(Duration::from_secs(5), async {
         let mut count = 0;
@@ -73,42 +73,38 @@ async fn loopback_capture_delivers_chunks() {
     handle.stop();
 }
 
-/// Start loopback + microphone capture and receive chunks from both sources.
+/// Start microphone-only capture and verify no loopback chunks are delivered.
 #[tokio::test]
-async fn loopback_and_mic_capture_deliver_chunks() {
+async fn microphone_capture_delivers_chunks() {
     // Skip silently if no microphone is present.
     if DeviceEnumerator::default_input_device().is_err() {
-        eprintln!("No microphone available; skipping combined capture test.");
+        eprintln!("No microphone available; skipping microphone capture test.");
         return;
     }
 
     let config = CaptureConfig {
+        enable_loopback: false,
         enable_microphone: true,
         ..CaptureConfig::default()
     };
 
-    let (handle, mut rx) =
-        AudioCaptureManager::start(config).expect("Capture should start");
+    let (handle, mut rx) = AudioCaptureManager::start(config).expect("Capture should start");
 
     let result = timeout(Duration::from_secs(10), async {
-        let mut loopback_count = 0usize;
         let mut mic_count = 0usize;
 
         while let Some(chunk) = rx.recv().await {
-            match chunk.source {
-                AudioSource::Loopback => loopback_count += 1,
-                AudioSource::Microphone => mic_count += 1,
-            }
-            if loopback_count >= 3 && mic_count >= 3 {
+            assert_eq!(chunk.source, AudioSource::Microphone);
+            mic_count += 1;
+            if mic_count >= 3 {
                 break;
             }
         }
-        (loopback_count, mic_count)
+        mic_count
     })
     .await
     .expect("Should receive chunks within 10 seconds");
 
-    assert!(result.0 >= 3, "Expected loopback chunks");
-    assert!(result.1 >= 3, "Expected microphone chunks");
+    assert!(result >= 3, "Expected microphone chunks");
     handle.stop();
 }
