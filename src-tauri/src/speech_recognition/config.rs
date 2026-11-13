@@ -6,6 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+// whisper-rs language utilities (get_lang_str, get_lang_id, get_lang_str_full).
+use whisper_rs;
+
 // ─── Language support ─────────────────────────────────────────────────────────
 
 /// Languages supported by VOXY for transcription.
@@ -125,5 +128,125 @@ impl Default for WhisperModelConfig {
             translate: false,
             suppress_output: true,
         }
+    }
+}
+
+// ─── Multilingual model configuration ──────────────────────────────────────────
+
+/// Result of Whisper language auto-detection.
+///
+/// Returned after inference when `language_hint` was set to `Auto`.
+#[derive(Debug, Clone)]
+pub struct LanguageDetectionResult {
+    /// ISO 639-1 code detected by Whisper (e.g. `"si"`, `"ta"`, `"en"`).
+    pub language_code: String,
+    /// Full language name (e.g. `"sinhala"`, `"tamil"`, `"english"`).
+    pub language_name: String,
+    /// Confidence score from Whisper's language detection (0.0 – 1.0).
+    pub confidence: f32,
+}
+
+/// Configuration for multilingual model behaviour.
+///
+/// Controls how the engine handles language detection, fallback, and
+/// validation when a multilingual Whisper model is loaded.
+#[derive(Debug, Clone)]
+pub struct MultilingualConfig {
+    /// Whether to use Whisper's built-in auto-detection.
+    pub auto_detect: bool,
+    /// Fallback language when auto-detection fails or confidence is low.
+    pub fallback_language: WhisperLanguage,
+    /// Minimum confidence threshold for accepting a detected language.
+    /// Below this, the fallback language is used.
+    pub min_confidence: f32,
+    /// When `true`, the detected language is logged for each transcription.
+    pub log_detected_language: bool,
+}
+
+impl Default for MultilingualConfig {
+    fn default() -> Self {
+        Self {
+            auto_detect: true,
+            fallback_language: WhisperLanguage::English,
+            min_confidence: 0.5,
+            log_detected_language: true,
+        }
+    }
+}
+
+impl MultilingualConfig {
+    /// Create a config that forces a specific language (no auto-detection).
+    pub fn fixed(language: WhisperLanguage) -> Self {
+        Self {
+            auto_detect: false,
+            fallback_language: language,
+            min_confidence: 0.0,
+            log_detected_language: false,
+        }
+    }
+
+    /// Create a config with auto-detection and custom fallback.
+    pub fn auto_with_fallback(fallback: WhisperLanguage) -> Self {
+        Self {
+            auto_detect: true,
+            fallback_language: fallback,
+            min_confidence: 0.5,
+            log_detected_language: true,
+        }
+    }
+}
+
+// ─── Language validation ───────────────────────────────────────────────────────
+
+/// Validate that a language is compatible with the loaded model.
+///
+/// Monolingual (English-only) Whisper models can only transcribe English.
+/// Multilingual models support all languages including Sinhala and Tamil.
+///
+/// Returns `Ok(())` if compatible, or an error message describing the
+/// mismatch.
+pub fn validate_language_for_model(
+    language: &WhisperLanguage,
+    is_multilingual: bool,
+) -> Result<(), String> {
+    if !is_multilingual {
+        match language {
+            WhisperLanguage::English | WhisperLanguage::Auto => Ok(()),
+            WhisperLanguage::Sinhala => Err(
+                "Sinhala requires a multilingual Whisper model. \
+                 The loaded model is English-only."
+                    .to_string(),
+            ),
+            WhisperLanguage::Tamil => Err(
+                "Tamil requires a multilingual Whisper model. \
+                 The loaded model is English-only."
+                    .to_string(),
+            ),
+        }
+    } else {
+        Ok(())
+    }
+}
+
+/// Map a Whisper language ID (integer) to a [`WhisperLanguage`].
+///
+/// Uses whisper-rs `get_lang_str` to convert the ID to a code string,
+/// then maps it to the VOXY enum.  Unknown languages fall back to
+/// [`WhisperLanguage::English`].
+pub fn lang_id_to_enum(lang_id: i32) -> WhisperLanguage {
+    let code = whisper_rs::get_lang_str(lang_id).unwrap_or("en");
+    WhisperLanguage::from_hint(code)
+}
+
+/// Get the full language name from a language code string.
+///
+/// Returns the ISO 639-1 code if the full name is not available.
+pub fn lang_full_name(code: &str) -> String {
+    let id = whisper_rs::get_lang_id(code);
+    if id >= 0 {
+        whisper_rs::get_lang_str_full(id)
+            .unwrap_or(code.to_string())
+    } else {
+        code.to_string()
     }
 }

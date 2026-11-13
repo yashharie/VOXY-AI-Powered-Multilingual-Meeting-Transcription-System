@@ -15,7 +15,10 @@ pub mod config;
 pub mod engine;
 
 // Re-export key types.
-pub use config::{WhisperLanguage, WhisperModelConfig};
+pub use config::{
+    lang_full_name, lang_id_to_enum, validate_language_for_model,
+    LanguageDetectionResult, MultilingualConfig, WhisperLanguage, WhisperModelConfig,
+};
 pub use engine::WhisperEngine;
 
 use crate::audio_processing::ProcessedAudio;

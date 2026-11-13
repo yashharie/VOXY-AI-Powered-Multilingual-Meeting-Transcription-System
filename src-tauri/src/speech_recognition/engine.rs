@@ -8,7 +8,6 @@
 //! and run even before a model has been downloaded.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -17,7 +16,7 @@ use whisper_rs::{
 use crate::audio_processing::ProcessedAudio;
 use crate::core::error::{AppError, AppResult};
 
-use super::config::WhisperModelConfig;
+use super::config::{MultilingualConfig, WhisperModelConfig};
 use super::RecognitionResult;
 
 /// Handle to the Whisper inference engine.
@@ -30,6 +29,10 @@ pub struct WhisperEngine {
     context: Option<WhisperContext>,
     /// Configuration used to load the model.
     config: WhisperModelConfig,
+    /// Whether the loaded model supports multiple languages.
+    is_multilingual: bool,
+    /// Multilingual behaviour configuration.
+    multilingual: MultilingualConfig,
 }
 
 impl WhisperEngine {
@@ -49,6 +52,8 @@ impl WhisperEngine {
             return Ok(Self {
                 context: None,
                 config: WhisperModelConfig::new(model_path),
+                is_multilingual: false,
+                multilingual: MultilingualConfig::default(),
             });
         }
 
@@ -60,15 +65,17 @@ impl WhisperEngine {
                 "Failed to load Whisper model: {e}"
             )))?;
 
-        let multilingual = context.is_multilingual();
+        let is_multilingual = context.is_multilingual();
         tracing::info!(
-            multilingual,
+            is_multilingual,
             "Whisper model loaded successfully"
         );
 
         Ok(Self {
             context: Some(context),
             config: WhisperModelConfig::new(model_path),
+            is_multilingual,
+            multilingual: MultilingualConfig::default(),
         })
     }
 
@@ -79,6 +86,8 @@ impl WhisperEngine {
         Self {
             context: None,
             config: WhisperModelConfig::default(),
+            is_multilingual: false,
+            multilingual: MultilingualConfig::default(),
         }
     }
 
@@ -127,9 +136,18 @@ impl WhisperEngine {
 
         // Language configuration.
         let lang = language_hint.trim();
-        if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
+        let requested_lang = super::config::WhisperLanguage::from_hint(lang);
+
+        // Validate language against model's multilingual capability.
+        if let Err(msg) =
+            super::config::validate_language_for_model(&requested_lang, self.is_multilingual)
+        {
+            tracing::warn!(language = lang, "{}", msg);
+            // Fall back to English for monolingual models.
+            params.set_language(Some("en"));
+        } else if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
             params.set_language(None);
-            params.set_detect_language(true);
+            params.set_detect_language(self.multilingual.auto_detect);
         } else {
             params.set_language(Some(lang));
         }
@@ -221,13 +239,26 @@ impl WhisperEngine {
             "Whisper transcription complete"
         );
 
+        // Log detected language when auto-detection is enabled.
+        if self.multilingual.log_detected_language
+            && self.multilingual.auto_detect
+            && !results.is_empty()
+        {
+            let full_name = super::config::lang_full_name(&detected_lang);
+            tracing::info!(
+                detected_language = %detected_lang,
+                full_name = %full_name,
+                segments = results.len(),
+                "Language auto-detected by Whisper"
+            );
+        }
+
         Ok(results)
     }
 }
 
 // SAFETY: `WhisperContext` is `Send + Sync` (confirmed in whisper-rs docs).
-// We wrap it in a struct that is therefore also `Send + Sync`.
-// The `Mutex` is not needed because `WhisperContext` itself is sync,
-// but we keep the engine behind `Arc` in the pipeline for shared access.
+// The engine wraps it and is therefore also safe to share across threads.
+// We keep the engine behind `Arc` in the pipeline for shared access.
 unsafe impl Send for WhisperEngine {}
 unsafe impl Sync for WhisperEngine {}
