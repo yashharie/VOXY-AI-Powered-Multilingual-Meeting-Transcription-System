@@ -70,7 +70,7 @@ impl Pipeline {
             .join("ggml-base.bin");
         let whisper = Arc::new(WhisperEngine::new(&whisper_path).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Whisper model not found, using stub engine");
- main
+            WhisperEngine
         }));
 
         let transcript_proc = TranscriptProcessor::new();

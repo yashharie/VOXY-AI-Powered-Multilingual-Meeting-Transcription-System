@@ -42,12 +42,7 @@
     "windows": {
       "nsis": {
         "languages": ["English"],
-        "displayInstallMode": true,
-        "shortcuts": {
-          "desktop": true,
-          "startMenu": true,
-          "startMenuPath": "VOXY"
-        }
+        "installMode": "currentUser"
       }
     }
   },
