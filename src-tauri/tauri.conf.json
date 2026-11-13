@@ -1,0 +1,59 @@
+{
+  "productName": "VOXY",
+  "version": "0.1.0",
+  "identifier": "com.tesseract.voxy",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "VOXY — AI Live Meeting Transcription",
+        "width": 1200,
+        "height": 760,
+        "minWidth": 800,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["English"],
+        "displayInstallMode": true,
+        "shortcuts": {
+          "desktop": true,
+          "startMenu": true,
+          "startMenuPath": "VOXY"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

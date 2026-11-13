@@ -1,3 +1,5 @@
+//! Audio preprocessing for captured PCM, resampling, normalization, and buffering.
+
 pub mod audio_format;
 pub mod buffer;
 pub mod chunker;
@@ -188,7 +190,6 @@ impl Default for AudioProcessor {
         Self::new()
     }
 }
-
 fn convert_channels(frame: &AudioFrame, target_channels: u16) -> Vec<f32> {
     match frame.channels {
         1 => frame.samples.clone(),
