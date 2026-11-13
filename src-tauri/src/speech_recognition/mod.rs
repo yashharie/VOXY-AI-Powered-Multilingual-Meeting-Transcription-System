@@ -17,7 +17,8 @@ pub mod engine;
 // Re-export key types.
 pub use config::{
     lang_full_name, lang_id_to_enum, validate_language_for_model,
-    LanguageDetectionResult, MultilingualConfig, WhisperLanguage, WhisperModelConfig,
+    LanguageDetectionResult, ModelDescriptor, ModelEvaluationConfig, ModelSize,
+    MultilingualConfig, QuantizationType, WhisperLanguage, WhisperModelConfig,
 };
 pub use engine::WhisperEngine;
 

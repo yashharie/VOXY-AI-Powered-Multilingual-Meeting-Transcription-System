@@ -250,3 +250,247 @@ pub fn lang_full_name(code: &str) -> String {
         code.to_string()
     }
 }
+
+// ─── Model size and quantization ───────────────────────────────────────────────
+
+/// Whisper model sizes available in whisper.cpp.
+///
+/// Each variant maps to a specific ggml model file.  Smaller models are
+/// faster but less accurate; larger models are more accurate but slower.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSize {
+    /// Tiny model — fastest, least accurate (~39 M params).
+    Tiny,
+    /// Base model — good speed/accuracy balance (~74 M params).
+    Base,
+    /// Small model — better accuracy, slower (~244 M params).
+    Small,
+    /// Medium model — high accuracy, slow (~769 M params).
+    Medium,
+    /// Large-v3 model — highest accuracy, very slow (~1550 M params).
+    LargeV3,
+}
+
+impl ModelSize {
+    /// The short identifier used in ggml file names, e.g. `"base"`.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Tiny => "tiny",
+            Self::Base => "base",
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::LargeV3 => "large-v3",
+        }
+    }
+
+    /// Approximate parameter count in millions.
+    pub fn params_m(&self) -> u32 {
+        match self {
+            Self::Tiny => 39,
+            Self::Base => 74,
+            Self::Small => 244,
+            Self::Medium => 769,
+            Self::LargeV3 => 1550,
+        }
+    }
+
+    /// Whether this model size is available in multilingual form.
+    ///
+    /// Tiny, Base, Small, and Medium have both English-only and multilingual
+    /// variants.  Large-v3 is multilingual only.
+    pub fn has_multilingual(&self) -> bool {
+        matches!(self, Self::Tiny | Self::Base | Self::Small | Self::Medium | Self::LargeV3)
+    }
+
+    /// Recommended model sizes for VOXY, ordered by preference.
+    ///
+    /// Base and Small offer the best speed/accuracy trade-off on
+    /// CPU-only Windows hardware.
+    pub fn recommended() -> &'static [ModelSize] {
+        &[Self::Base, Self::Small]
+    }
+}
+
+impl std::fmt::Display for ModelSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id())
+    }
+}
+
+/// Quantization type for ggml model files.
+///
+/// Quantized models use less memory and run faster at a small accuracy cost.
+/// The naming follows whisper.cpp conventions (e.g. `ggml-base-q5_0.bin`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuantizationType {
+    /// No quantization — F16 weights (`ggml-*.bin`).
+    F16,
+    /// 4-bit quantization, variant 0 (`ggml-*-q4_0.bin`).
+    Q4_0,
+    /// 4-bit quantization, variant 1 (`ggml-*-q4_1.bin`).
+    Q4_1,
+    /// 5-bit quantization, variant 0 (`ggml-*-q5_0.bin`).
+    Q5_0,
+    /// 5-bit quantization, variant 1 (`ggml-*-q5_1.bin`).
+    Q5_1,
+    /// 8-bit quantization (`ggml-*-q8_0.bin`).
+    Q8_0,
+}
+
+impl QuantizationType {
+    /// The suffix appended to the model file name, or empty for F16.
+    ///
+    /// Examples: `"-q5_0"`, `"-q8_0"`, `""` (F16).
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            Self::F16 => "",
+            Self::Q4_0 => "-q4_0",
+            Self::Q4_1 => "-q4_1",
+            Self::Q5_0 => "-q5_0",
+            Self::Q5_1 => "-q5_1",
+            Self::Q8_0 => "-q8_0",
+        }
+    }
+
+    /// Approximate memory reduction factor relative to F16.
+    ///
+    /// E.g. Q5_0 uses roughly half the memory of F16.
+    pub fn memory_factor(&self) -> f32 {
+        match self {
+            Self::F16 => 1.0,
+            Self::Q4_0 | Self::Q4_1 => 0.25,
+            Self::Q5_0 | Self::Q5_1 => 0.31,
+            Self::Q8_0 => 0.5,
+        }
+    }
+}
+
+impl Default for QuantizationType {
+    fn default() -> Self {
+        // Q5_0 offers the best accuracy/memory trade-off for VOXY.
+        Self::Q5_0
+    }
+}
+
+impl std::fmt::Display for QuantizationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::F16 => write!(f, "f16"),
+            _ => write!(f, "{}", &self.suffix()[1..]), // strip leading '-'
+        }
+    }
+}
+
+// ─── Model descriptor and path resolution ─────────────────────────────────────
+
+/// A complete description of a Whisper model file.
+///
+/// Combines model size, quantization, and language capability to produce
+/// the expected ggml file name.
+#[derive(Debug, Clone)]
+pub struct ModelDescriptor {
+    /// Model size (Tiny, Base, Small, Medium, LargeV3).
+    pub size: ModelSize,
+    /// Quantization type.
+    pub quantization: QuantizationType,
+    /// Whether this is the multilingual variant.
+    pub multilingual: bool,
+}
+
+impl ModelDescriptor {
+    /// Construct the ggml model file name.
+    ///
+    /// Examples:
+    /// - `ModelDescriptor { size: Base, quantization: F16, multilingual: true }`
+    ///   → `"ggml-base.bin"`
+    /// - `ModelDescriptor { size: Small, quantization: Q5_0, multilingual: true }`
+    ///   → `"ggml-small-q5_0.bin"`
+    /// - `ModelDescriptor { size: Base, quantization: F16, multilingual: false }`
+    ///   → `"ggml-base.en.bin"`
+    pub fn file_name(&self) -> String {
+        let en_suffix = if self.multilingual { "" } else { ".en" };
+        format!(
+            "ggml-{}{}{}.bin",
+            self.size.id(),
+            en_suffix,
+            self.quantization.suffix(),
+        )
+    }
+
+    /// Resolve the full path to the model file in the given directory.
+    pub fn resolve_path(&self, models_dir: &Path) -> PathBuf {
+        models_dir.join(self.file_name())
+    }
+}
+
+impl Default for ModelDescriptor {
+    fn default() -> Self {
+        Self {
+            size: ModelSize::Base,
+            quantization: QuantizationType::Q5_0,
+            multilingual: true,
+        }
+    }
+}
+
+// ─── Model evaluation configuration ───────────────────────────────────────────
+
+/// Configuration for evaluating different Whisper model configurations.
+///
+/// Used to benchmark model sizes and quantization levels to determine
+/// the best trade-off for VOXY on the target hardware.
+#[derive(Debug, Clone)]
+pub struct ModelEvaluationConfig {
+    /// Model sizes to evaluate.
+    pub sizes: Vec<ModelSize>,
+    /// Quantization types to evaluate for each size.
+    pub quantizations: Vec<QuantizationType>,
+    /// Directory containing model files.
+    pub models_dir: PathBuf,
+    /// Maximum audio duration (seconds) to use for evaluation samples.
+    pub max_audio_duration_s: u32,
+    /// Number of warm-up inference calls before measuring.
+    pub warmup_iterations: u32,
+    /// Number of timed inference calls for averaging.
+    pub benchmark_iterations: u32,
+}
+
+impl Default for ModelEvaluationConfig {
+    fn default() -> Self {
+        Self {
+            sizes: ModelSize::recommended().to_vec(),
+            quantizations: vec![
+                QuantizationType::F16,
+                QuantizationType::Q5_0,
+                QuantizationType::Q5_1,
+                QuantizationType::Q8_0,
+            ],
+            models_dir: PathBuf::from("models"),
+            max_audio_duration_s: 30,
+            warmup_iterations: 1,
+            benchmark_iterations: 3,
+        }
+    }
+}
+
+impl ModelEvaluationConfig {
+    /// Generate all model descriptors to evaluate.
+    ///
+    /// Only returns descriptors whose model file exists in `models_dir`.
+    pub fn available_models(&self) -> Vec<ModelDescriptor> {
+        let mut descriptors = Vec::new();
+        for size in &self.sizes {
+            for quant in &self.quantizations {
+                let descriptor = ModelDescriptor {
+                    size: size.clone(),
+                    quantization: quant.clone(),
+                    multilingual: true,
+                };
+                if descriptor.resolve_path(&self.models_dir).is_file() {
+                    descriptors.push(descriptor);
+                }
+            }
+        }
+        descriptors
+    }
+}
