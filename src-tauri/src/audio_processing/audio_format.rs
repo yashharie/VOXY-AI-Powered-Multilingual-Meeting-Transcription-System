@@ -95,6 +95,7 @@ impl AudioChunk {
 pub struct ProcessedAudio {
     pub format: PcmFormat,
     pub samples: Vec<f32>,
+    pub sample_rate: u32,
     pub samples_per_channel: usize,
     pub timestamp_ms: Option<u64>,
     pub timing: AudioTiming,
@@ -105,6 +106,7 @@ impl ProcessedAudio {
         Self {
             format: PcmFormat::new(sample_rate, channels, 32),
             samples: Vec::new(),
+            sample_rate,
             samples_per_channel: 0,
             timestamp_ms: None,
             timing: AudioTiming {

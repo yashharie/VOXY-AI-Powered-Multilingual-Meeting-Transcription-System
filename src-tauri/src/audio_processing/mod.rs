@@ -15,6 +15,10 @@ pub use resampler::{
 pub use validator::{validate_audio_frame, validate_pcm_format, AudioValidationError};
 
 use std::cmp;
+use std::sync::Mutex;
+
+use crate::audio_capture::AudioFrame as CapturedAudioFrame;
+use crate::core::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioInput {
@@ -88,7 +92,10 @@ impl AudioPreprocessor {
         }
 
         if frame.samples.is_empty() {
-            return Ok(ProcessedAudio::empty_for(frame.sample_rate, frame.channels));
+            return Ok(ProcessedAudio::empty_for(
+                self.target_sample_rate,
+                self.target_channels,
+            ));
         }
 
         self.input_sample_rate = Some(frame.sample_rate);
@@ -129,6 +136,7 @@ impl AudioPreprocessor {
         Ok(ProcessedAudio {
             format: PcmFormat::new(self.target_sample_rate, self.target_channels, 32),
             samples: final_samples,
+            sample_rate: self.target_sample_rate,
             samples_per_channel: sample_count / self.target_channels as usize,
             timestamp_ms: frame.timestamp_ms,
             timing: AudioTiming {
@@ -141,6 +149,43 @@ impl AudioPreprocessor {
 
     pub fn flush(&mut self) -> Vec<f32> {
         self.buffer.drain_all()
+    }
+}
+
+/// Stateful adapter matching the application pipeline's capture-frame interface.
+pub struct AudioProcessor {
+    preprocessor: Mutex<AudioPreprocessor>,
+}
+
+impl AudioProcessor {
+    pub fn new() -> Self {
+        Self {
+            preprocessor: Mutex::new(AudioPreprocessor::new(16_000, 1, 64_000)),
+        }
+    }
+
+    pub fn process(&self, frame: CapturedAudioFrame) -> AppResult<ProcessedAudio> {
+        let frame = AudioFrame::new(
+            frame.sample_rate,
+            frame.channels,
+            frame.samples,
+            None,
+            None,
+            false,
+        );
+        let mut preprocessor = self.preprocessor.lock().map_err(|error| {
+            AppError::Internal(format!("audio preprocessor lock poisoned: {error}"))
+        })?;
+
+        preprocessor.process_frame(&frame).map_err(|error| {
+            AppError::InvalidConfig(format!("invalid captured PCM frame: {error:?}"))
+        })
+    }
+}
+
+impl Default for AudioProcessor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -183,8 +228,28 @@ mod tests {
         let frame = AudioFrame::new(48000, 1, sine_wave(0.5, 256), Some(0), Some(0), false);
         let result = processor.process_frame(&frame).unwrap();
         assert_eq!(result.format.sample_rate, 16000);
+        assert_eq!(result.sample_rate, 16000);
         assert!(!result.samples.is_empty());
         assert!(result.samples.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn pipeline_adapter_accepts_capture_frames_and_returns_16khz_mono() {
+        let processor = AudioProcessor::new();
+        let frame = CapturedAudioFrame {
+            sample_rate: 48000,
+            channels: 2,
+            samples: sine_wave(0.3, 512)
+                .into_iter()
+                .flat_map(|sample| [sample, sample])
+                .collect(),
+        };
+
+        let result = processor.process(frame).unwrap();
+
+        assert_eq!(result.sample_rate, 16000);
+        assert_eq!(result.format.channels, 1);
+        assert!(!result.samples.is_empty());
     }
 
     #[test]
@@ -193,6 +258,7 @@ mod tests {
         let frame = AudioFrame::new(48000, 1, vec![], Some(0), Some(0), false);
         let result = processor.process_frame(&frame).unwrap();
         assert!(result.samples.is_empty());
+        assert_eq!(result.sample_rate, 16000);
     }
 
     #[test]
