@@ -108,121 +108,131 @@ function _startSpeechRecognition(): void {
     (window as any).SpeechRecognition ||
     (window as any).webkitSpeechRecognition;
   if (!SpeechRec) {
+    console.warn('SpeechRecognition API not available in this WebView');
     return;
   }
 
-  try {
-    const recognition = new SpeechRec();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    // Set speech recognition language based on explicit spoken language setting.
-    // When "Auto-Detect" is selected, fall back to target language so the
-    // recognizer outputs native script (Tamil/Sinhala Unicode) rather than
-    // romanised English phonemes (enna nadakuthu → என்ன நடக்கிறது).
-    const spoken = get(spokenLanguage);
-    const target = get(targetLanguage);
-
-    if (spoken === 'ta') {
-      recognition.lang = 'ta-LK';
-    } else if (spoken === 'si') {
-      recognition.lang = 'si-LK';
-    } else if (spoken === 'en') {
-      recognition.lang = 'en-US';
-    } else {
-      // spoken === 'auto' — mirror the target language so native script is captured
-      if (target === 'ta') {
-        recognition.lang = 'ta-LK';
-      } else if (target === 'si') {
-        recognition.lang = 'si-LK';
-      } else {
-        recognition.lang = 'en-US';
-      }
+  // Ensure microphone permission is granted before starting recognition.
+  // In Tauri/WebView2, getUserMedia must succeed first otherwise SpeechRecognition
+  // will silently fail with a "not-allowed" error.
+  (async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream.getTracks().forEach((t) => t.stop()); // permission granted — stop probe stream
+    } catch (permErr) {
+      console.warn('Microphone permission denied — transcription will not work:', permErr);
+      errorMessage.set('Microphone permission denied. Please allow microphone access and restart.');
+      sessionStatus.set('idle');
+      return;
     }
 
-    recognition.onresult = async (event: any) => {
-      if (get(sessionStatus) !== 'active') return;
+    try {
+      const recognition = new SpeechRec();
+      recognition.continuous = true;
+      recognition.interimResults = true;
 
-      let interimText = '';
+      // Set speech recognition language based on explicit spoken language setting.
+      // When "Auto-Detect" is selected, fall back to target language so the
+      // recognizer outputs native script (Tamil/Sinhala Unicode) rather than
+      // romanised English phonemes (enna nadakuthu → என்ன நடக்கிறது).
+      const spoken = get(spokenLanguage);
+      const target = get(targetLanguage);
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const item = event.results[i];
-        const rawText = item[0]?.transcript?.trim();
-        if (!rawText) continue;
+      if (spoken === 'ta') {
+        recognition.lang = 'ta-LK';
+      } else if (spoken === 'si') {
+        recognition.lang = 'si-LK';
+      } else if (spoken === 'en') {
+        recognition.lang = 'en-US';
+      } else {
+        // spoken === 'auto' — mirror the target language so native script is captured
+        if (target === 'ta') {
+          recognition.lang = 'ta-LK';
+        } else if (target === 'si') {
+          recognition.lang = 'si-LK';
+        } else {
+          recognition.lang = 'en-US';
+        }
+      }
 
-        if (item.isFinal) {
-          // Sentence finalized
-          const target = get(targetLanguage);
-          const { text, language, detectedLang } = await translateSegment(rawText, target);
+      recognition.onresult = async (event: any) => {
+        if (get(sessionStatus) !== 'active') return;
+
+        let interimText = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          const rawText = item[0]?.transcript?.trim();
+          if (!rawText) continue;
+
+          if (item.isFinal) {
+            const tgt = get(targetLanguage);
+            const { text, language, detectedLang } = await translateSegment(rawText, tgt);
+            const startTime = get(sessionStartTime) ?? Date.now();
+            const elapsedSec = (Date.now() - startTime) / 1000;
+
+            let speakerLabel = 'Speaker';
+            if (detectedLang !== 'und' && tgt !== 'auto' && detectedLang !== tgt) {
+              speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${tgt.toUpperCase()})`;
+            }
+
+            if (_interimId) {
+              upsertSegment({
+                id: _interimId,
+                text,
+                start_time: Math.max(0, elapsedSec - 2.5),
+                end_time: elapsedSec,
+                speaker: speakerLabel,
+                language,
+              });
+              _interimId = null;
+            } else {
+              appendSegment({
+                id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                text,
+                start_time: Math.max(0, elapsedSec - 2.5),
+                end_time: elapsedSec,
+                speaker: speakerLabel,
+                language,
+              });
+            }
+          } else {
+            interimText += rawText + ' ';
+          }
+        }
+
+        // Real-time interim display — instant word streaming
+        if (interimText.trim()) {
+          if (!_interimId) _interimId = `interim-${Date.now()}`;
           const startTime = get(sessionStartTime) ?? Date.now();
           const elapsedSec = (Date.now() - startTime) / 1000;
-
-          let speakerLabel = 'Speaker';
-          if (detectedLang !== 'und' && target !== 'auto' && detectedLang !== target) {
-            speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${target.toUpperCase()})`;
-          }
-
-          if (_interimId) {
-            // Replace the interim segment with the finalized translated segment
-            upsertSegment({
-              id: _interimId,
-              text,
-              start_time: Math.max(0, elapsedSec - 2.5),
-              end_time: elapsedSec,
-              speaker: speakerLabel,
-              language,
-            });
-            _interimId = null;
-          } else {
-            appendSegment({
-              id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              text,
-              start_time: Math.max(0, elapsedSec - 2.5),
-              end_time: elapsedSec,
-              speaker: speakerLabel,
-              language,
-            });
-          }
-        } else {
-          interimText += rawText + ' ';
+          upsertSegment({
+            id: _interimId,
+            text: interimText.trim() + ' …',
+            start_time: Math.max(0, elapsedSec - 1),
+            end_time: elapsedSec,
+            speaker: 'Live Speaker',
+            language: get(targetLanguage) === 'auto' ? 'en' : (get(targetLanguage) as any),
+          });
         }
-      }
+      };
 
-      // Real-time instant display for words being spoken right now (0s delay!)
-      if (interimText.trim()) {
-        if (!_interimId) {
-          _interimId = `interim-${Date.now()}`;
+      recognition.onerror = (e: any) => {
+        console.warn('Speech recognition error:', e?.error || e);
+      };
+
+      recognition.onend = () => {
+        if (get(sessionStatus) === 'active') {
+          try { recognition.start(); } catch { /* ignore restart errors */ }
         }
-        const startTime = get(sessionStartTime) ?? Date.now();
-        const elapsedSec = (Date.now() - startTime) / 1000;
-        upsertSegment({
-          id: _interimId,
-          text: interimText.trim() + ' …',
-          start_time: Math.max(0, elapsedSec - 1),
-          end_time: elapsedSec,
-          speaker: 'Live Speaker',
-          language: get(targetLanguage) === 'auto' ? 'en' : (get(targetLanguage) as any),
-        });
-      }
-    };
+      };
 
-    recognition.onerror = (e: any) => {
-      console.warn('Live speech recognition warning:', e?.error || e);
-    };
-
-    recognition.onend = () => {
-      if (get(sessionStatus) === 'active') {
-        try {
-          recognition.start();
-        } catch {}
-      }
-    };
-
-    recognition.start();
-    _speechRecognition = recognition;
-  } catch (err) {
-    console.warn('SpeechRecognition could not start:', err);
-  }
+      recognition.start();
+      _speechRecognition = recognition;
+    } catch (err) {
+      console.warn('SpeechRecognition could not start:', err);
+    }
+  })();
 }
 
 function _stopSpeechRecognition(): void {

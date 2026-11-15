@@ -121,65 +121,65 @@ export async function stopSession(sessionId: string): Promise<SessionInfo> {
 // ── Audio device commands ─────────────────────────────────────────────────────
 
 export async function listAudioDevices(): Promise<AudioDevice[]> {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
-      // First try to request audio stream briefly so Windows/browser populates real hardware device labels
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((t) => t.stop());
-      } catch {
-        // User may have already allowed or prompt handled
-      }
+  // Static fallback — always shown so dropdown is never empty
+  const fallback: AudioDevice[] = [
+    { id: 'default',       name: 'Default Microphone (System)',           is_default: true  },
+    { id: 'dev-mic',       name: 'Microphone (Voice Input)',              is_default: false },
+    { id: 'dev-speakers',  name: 'Speakers / Headset (Meeting Audio)',    is_default: false },
+    { id: 'dev-stereomix', name: 'Stereo Mix (System Loopback)',          is_default: false },
+  ];
 
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      const audioInputs = devs.filter((d) => d.kind === 'audioinput');
-      const audioOutputs = devs.filter((d) => d.kind === 'audiooutput');
-
-      const result: AudioDevice[] = [];
-
-      // Always include Default option
-      result.push({
-        id: 'default',
-        name: 'Default Audio (System Loopback / Mic)',
-        is_default: true,
-      });
-
-      // Add actual input devices (Microphones, Stereo Mix, Headsets)
-      audioInputs.forEach((d, i) => {
-        if (d.deviceId && d.deviceId !== 'default') {
-          result.push({
-            id: d.deviceId,
-            name: d.label || `Microphone ${i + 1}`,
-            is_default: false,
-          });
-        }
-      });
-
-      // Add output devices (Speakers, Virtual Audio Cables, Headphones)
-      audioOutputs.forEach((d, i) => {
-        if (d.deviceId && d.deviceId !== 'default') {
-          result.push({
-            id: d.deviceId,
-            name: d.label ? `Output: ${d.label}` : `Speaker ${i + 1}`,
-            is_default: false,
-          });
-        }
-      });
-
-      if (result.length > 1) {
-        return result;
-      }
-    }
-  } catch (err) {
-    console.warn('listAudioDevices error:', err);
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
+    return fallback;
   }
 
-  return [
-    { id: 'default', name: 'Default Audio (System Loopback & Mic)', is_default: true },
-    { id: 'dev-speakers', name: 'Speakers / Headset (Meeting Audio)', is_default: false },
-    { id: 'dev-mic', name: 'Microphone (Voice Input)', is_default: false },
-    { id: 'dev-stereomix', name: 'Stereo Mix (System Loopback)', is_default: false },
-  ];
+  try {
+    // Request permission first — this triggers the OS mic permission dialog in Tauri/WebView2
+    // and also causes enumerateDevices() to return real hardware labels.
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (permErr) {
+      console.warn('Mic permission denied or unavailable:', permErr);
+      // Return fallback so dropdown always has options
+      return fallback;
+    }
+
+    // Enumerate real hardware devices now that we have permission
+    const devs = await navigator.mediaDevices.enumerateDevices();
+
+    // Stop the permission-probe stream immediately
+    stream.getTracks().forEach((t) => t.stop());
+
+    const result: AudioDevice[] = [];
+
+    // Default / communications device first
+    result.push({ id: 'default', name: 'Default Microphone (System)', is_default: true });
+
+    devs.forEach((d, i) => {
+      if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
+
+      if (d.kind === 'audioinput') {
+        result.push({
+          id: d.deviceId,
+          name: d.label || `Microphone ${i + 1}`,
+          is_default: false,
+        });
+      } else if (d.kind === 'audiooutput') {
+        result.push({
+          id: d.deviceId,
+          name: d.label ? `Output: ${d.label}` : `Speaker ${i + 1}`,
+          is_default: false,
+        });
+      }
+    });
+
+    // Always at least 1 real device — if enumerateDevices returned nothing useful, use fallback
+    return result.length > 1 ? result : fallback;
+  } catch (err) {
+    console.warn('listAudioDevices error:', err);
+    return fallback;
+  }
 }
 
 // ── Tauri event listeners ─────────────────────────────────────────────────────
