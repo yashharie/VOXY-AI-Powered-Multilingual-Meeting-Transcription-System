@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { segments, sessionName, meetingPlatform } from '../lib/sessionStore';
+  import { segments, sessionName, meetingPlatform, targetLanguage } from '../lib/sessionStore';
   import { buildExportText, downloadTextFile } from '../lib/utils';
 
   let copyFeedback = '';
@@ -59,6 +59,7 @@
             <div class="meta">
               <strong>Session:</strong> ${name} &nbsp;|&nbsp;
               <strong>Platform:</strong> ${platform} &nbsp;|&nbsp;
+              <strong>Target Language:</strong> ${$targetLanguage.toUpperCase()} &nbsp;|&nbsp;
               <strong>Date:</strong> ${dateStr} &nbsp;|&nbsp;
               <strong>Total Segments:</strong> ${$segments.length}
             </div>

@@ -9,6 +9,7 @@
     sessionName,
     audioDevices,
     selectedDeviceId,
+    targetLanguage,
   } from '../lib/sessionStore';
   import { formatTime } from '../lib/utils';
 
@@ -63,6 +64,11 @@
     <div class="info-row">
       <dt>Device</dt>
       <dd class="truncate" title={deviceName}>{deviceName}</dd>
+    </div>
+
+    <div class="info-row">
+      <dt>Target</dt>
+      <dd>{langLabels[$targetLanguage] ?? $targetLanguage.toUpperCase()}</dd>
     </div>
 
     <div class="info-row">

@@ -6,6 +6,8 @@
     errorMessage,
     meetingPlatform,
     sessionName,
+    targetLanguage,
+    spokenLanguage,
   } from '../lib/sessionStore';
   import {
     handleStart,
@@ -15,6 +17,18 @@
   } from '../lib/sessionController';
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
+  const TARGET_LANGUAGES = [
+    { code: 'en', label: 'English' },
+    { code: 'ta', label: 'Tamil (தமிழ்)' },
+    { code: 'si', label: 'Sinhala (සිංහල)' },
+    { code: 'auto', label: 'Original (As Spoken)' },
+  ];
+  const SPOKEN_LANGUAGES = [
+    { code: 'auto', label: 'Auto-Detect (Multilingual)' },
+    { code: 'en', label: 'English' },
+    { code: 'ta', label: 'Tamil (தமிழ்)' },
+    { code: 'si', label: 'Sinhala (සිංහල)' },
+  ];
 
   $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
   $: isActive = $sessionStatus === 'active';
@@ -68,6 +82,36 @@
         <option value={device.id}>
           {device.name}{device.is_default ? ' (default)' : ''}
         </option>
+      {/each}
+    </select>
+  </div>
+
+  <div class="field-row">
+    <label for="target-lang-select" class="field-label">Transcribe to</label>
+    <select
+      id="target-lang-select"
+      class="field-select"
+      bind:value={$targetLanguage}
+      disabled={!isIdle}
+      aria-label="Select language to transcribe into"
+    >
+      {#each TARGET_LANGUAGES as lang}
+        <option value={lang.code}>{lang.label}</option>
+      {/each}
+    </select>
+  </div>
+
+  <div class="field-row">
+    <label for="spoken-lang-select" class="field-label">Spoken language</label>
+    <select
+      id="spoken-lang-select"
+      class="field-select"
+      bind:value={$spokenLanguage}
+      disabled={!isIdle}
+      aria-label="Select spoken language or auto-detect"
+    >
+      {#each SPOKEN_LANGUAGES as lang}
+        <option value={lang.code}>{lang.label}</option>
       {/each}
     </select>
   </div>

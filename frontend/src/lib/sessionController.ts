@@ -15,6 +15,8 @@ import {
   appendSegment,
   clearSession,
   audioDevices,
+  targetLanguage,
+  spokenLanguage,
 } from './sessionStore';
 import {
   initSession,
@@ -40,6 +42,63 @@ let _mockTimer: ReturnType<typeof setInterval> | null = null;
 let _speechRecognition: any = null;
 let _initialized = false;
 
+export function detectLanguage(text: string): 'ta' | 'si' | 'en' | 'und' {
+  if (/[\u0B80-\u0BFF]/.test(text)) return 'ta';
+  if (/[\u0D80-\u0DFF]/.test(text)) return 'si';
+  if (/[a-zA-Z]/.test(text)) return 'en';
+  return 'und';
+}
+
+export async function translateSegment(
+  text: string,
+  targetLang: string,
+): Promise<{ text: string; language: 'ta' | 'si' | 'en' | 'und'; detectedLang: 'ta' | 'si' | 'en' | 'und' }> {
+  const localDetected = detectLanguage(text);
+  if (!targetLang || targetLang === 'auto' || targetLang === localDetected) {
+    return {
+      text,
+      language: localDetected,
+      detectedLang: localDetected,
+    };
+  }
+
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Translation request failed');
+    const data = await res.json();
+    const translated =
+      data[0]
+        ?.map((chunk: any) => chunk[0])
+        .filter(Boolean)
+        .join('')
+        ?.trim() || text;
+
+    let apiDetected = data[2] || localDetected;
+    if (typeof apiDetected === 'string') {
+      if (apiDetected.startsWith('en')) apiDetected = 'en';
+      else if (apiDetected.startsWith('ta')) apiDetected = 'ta';
+      else if (apiDetected.startsWith('si')) apiDetected = 'si';
+      else apiDetected = localDetected;
+    } else {
+      apiDetected = localDetected;
+    }
+
+    return {
+      text: translated,
+      language: (targetLang as 'ta' | 'si' | 'en') || 'und',
+      detectedLang: apiDetected as 'ta' | 'si' | 'en' | 'und',
+    };
+  } catch (err) {
+    console.warn('Translation fallback to original:', err);
+    return {
+      text,
+      language: localDetected,
+      detectedLang: localDetected,
+    };
+  }
+}
+
 function _startSpeechRecognition(): void {
   if (typeof window === 'undefined') return;
   const SpeechRec =
@@ -53,25 +112,51 @@ function _startSpeechRecognition(): void {
     const recognition = new SpeechRec();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
 
-    recognition.onresult = (event: any) => {
+    // Set speech recognition language based on user's selection
+    const spoken = get(spokenLanguage);
+    if (spoken === 'ta') {
+      recognition.lang = 'ta-LK';
+    } else if (spoken === 'si') {
+      recognition.lang = 'si-LK';
+    } else if (spoken === 'en') {
+      recognition.lang = 'en-US';
+    } else {
+      const target = get(targetLanguage);
+      if (target === 'ta') {
+        recognition.lang = 'ta-LK';
+      } else if (target === 'si') {
+        recognition.lang = 'si-LK';
+      } else {
+        recognition.lang = 'en-US';
+      }
+    }
+
+    recognition.onresult = async (event: any) => {
       if (get(sessionStatus) !== 'active') return;
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         const item = event.results[i];
-        const text = item[0]?.transcript?.trim();
-        if (!text) continue;
+        const rawText = item[0]?.transcript?.trim();
+        if (!rawText) continue;
 
         if (item.isFinal) {
+          const target = get(targetLanguage);
+          const { text, language, detectedLang } = await translateSegment(rawText, target);
           const startTime = get(sessionStartTime) ?? Date.now();
           const elapsedSec = (Date.now() - startTime) / 1000;
+
+          let speakerLabel = 'Speaker';
+          if (detectedLang !== 'und' && target !== 'auto' && detectedLang !== target) {
+            speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${target.toUpperCase()})`;
+          }
+
           appendSegment({
             id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             text,
             start_time: Math.max(0, elapsedSec - 2.5),
             end_time: elapsedSec,
-            speaker: 'Live Speaker',
-            language: 'en',
+            speaker: speakerLabel,
+            language,
           });
         }
       }
@@ -152,8 +237,23 @@ export async function handleStart(_deviceId: string): Promise<void> {
     clearSession();
     resetMockSegments();
 
-    _unlistenTranscript = await onTranscriptSegment((segment) => {
-      appendSegment(segment);
+    _unlistenTranscript = await onTranscriptSegment(async (segment) => {
+      const target = get(targetLanguage);
+      if (target && target !== 'auto') {
+        const { text, language, detectedLang } = await translateSegment(segment.text, target);
+        let speakerLabel = segment.speaker || 'Speaker';
+        if (detectedLang !== 'und' && detectedLang !== target) {
+          speakerLabel = `${speakerLabel} (${detectedLang.toUpperCase()} → ${target.toUpperCase()})`;
+        }
+        appendSegment({
+          ...segment,
+          text,
+          language,
+          speaker: speakerLabel,
+        });
+      } else {
+        appendSegment(segment);
+      }
     });
 
     sessionStatus.set('active');
