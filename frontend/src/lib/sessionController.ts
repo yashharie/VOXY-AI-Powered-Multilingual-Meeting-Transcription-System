@@ -93,8 +93,9 @@ export async function handleStart(_deviceId: string): Promise<void> {
     sessionStatus.set('active');
     sessionStartTime.set(Date.now());
 
-    // Mock feed when not in Tauri (browser dev) or when backend has no audio yet
-    if (!isTauri()) {
+    // Only run mock feed if explicitly requested via URL parameter (?mock=true) for browser UI testing
+    const isExplicitMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
+    if (!isTauri() && isExplicitMock) {
       _mockTimer = setInterval(() => {
         if (get(sessionStatus) === 'active') {
           appendSegment(nextMockSegment());
@@ -125,7 +126,8 @@ export async function handleResume(): Promise<void> {
   try {
     await resumeSession(_sessionId);
     sessionStatus.set('active');
-    if (!isTauri()) {
+    const isExplicitMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
+    if (!isTauri() && isExplicitMock) {
       _mockTimer = setInterval(() => {
         if (get(sessionStatus) === 'active') {
           appendSegment(nextMockSegment());

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { initSessionController } from './lib/sessionController';
   import Header from './components/Header.svelte';
   import SessionControls from './components/SessionControls.svelte';
   import SessionInfo from './components/SessionInfo.svelte';
@@ -10,6 +12,10 @@
 
   type View = 'session' | 'settings' | 'diagnostics';
   let activeView: View = 'session';
+
+  onMount(() => {
+    initSessionController();
+  });
 </script>
 
 <div class="app-shell">
