@@ -14,9 +14,23 @@ import type {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function unwrap<T>(result: VoxyResult<T>): T {
-  if ("Ok" in result) return result.Ok;
-  throw new Error(`[${result.Err.code}] ${result.Err.message}`);
+function unwrap<T>(result: any): T {
+  if (result == null) return result as T;
+  if (typeof result === 'object') {
+    if ('Ok' in result) {
+      return result.Ok as T;
+    }
+    if ('Err' in result) {
+      const err = result.Err;
+      const code = err?.code ?? 'ERROR';
+      const msg = err?.message ?? (typeof err === 'string' ? err : 'Unknown error');
+      throw new Error(`[${code}] ${msg}`);
+    }
+    if ('code' in result && 'message' in result) {
+      throw new Error(`[${result.code}] ${result.message}`);
+    }
+  }
+  return result as T;
 }
 
 // ─── Application commands ────────────────────────────────────────────────────

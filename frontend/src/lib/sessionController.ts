@@ -37,7 +37,73 @@ let _sessionId: string | null = null;
 let _unlistenTranscript: (() => void) | null = null;
 let _unlistenStatus: (() => void) | null = null;
 let _mockTimer: ReturnType<typeof setInterval> | null = null;
+let _speechRecognition: any = null;
 let _initialized = false;
+
+function _startSpeechRecognition(): void {
+  if (typeof window === 'undefined') return;
+  const SpeechRec =
+    (window as any).SpeechRecognition ||
+    (window as any).webkitSpeechRecognition;
+  if (!SpeechRec) {
+    return;
+  }
+
+  try {
+    const recognition = new SpeechRec();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event: any) => {
+      if (get(sessionStatus) !== 'active') return;
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const item = event.results[i];
+        const text = item[0]?.transcript?.trim();
+        if (!text) continue;
+
+        if (item.isFinal) {
+          const startTime = get(sessionStartTime) ?? Date.now();
+          const elapsedSec = (Date.now() - startTime) / 1000;
+          appendSegment({
+            id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            text,
+            start_time: Math.max(0, elapsedSec - 2.5),
+            end_time: elapsedSec,
+            speaker: 'Live Speaker',
+            language: 'en',
+          });
+        }
+      }
+    };
+
+    recognition.onerror = (e: any) => {
+      console.warn('Live speech recognition warning:', e?.error || e);
+    };
+
+    recognition.onend = () => {
+      if (get(sessionStatus) === 'active') {
+        try {
+          recognition.start();
+        } catch {}
+      }
+    };
+
+    recognition.start();
+    _speechRecognition = recognition;
+  } catch (err) {
+    console.warn('SpeechRecognition could not start:', err);
+  }
+}
+
+function _stopSpeechRecognition(): void {
+  if (_speechRecognition) {
+    try {
+      _speechRecognition.stop();
+    } catch {}
+    _speechRecognition = null;
+  }
+}
 
 // ── Init once at app startup ──────────────────────────────────────────────────
 
@@ -93,6 +159,9 @@ export async function handleStart(_deviceId: string): Promise<void> {
     sessionStatus.set('active');
     sessionStartTime.set(Date.now());
 
+    // Start live speech transcription
+    _startSpeechRecognition();
+
     // Only run mock feed if explicitly requested via URL parameter (?mock=true) for browser UI testing
     const isExplicitMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
     if (!isTauri() && isExplicitMock) {
@@ -116,6 +185,7 @@ export async function handlePause(): Promise<void> {
     await pauseSession(_sessionId);
     sessionStatus.set('paused');
     _stopMockTimer();
+    _stopSpeechRecognition();
   } catch (err) {
     errorMessage.set(String(err));
   }
@@ -126,6 +196,7 @@ export async function handleResume(): Promise<void> {
   try {
     await resumeSession(_sessionId);
     sessionStatus.set('active');
+    _startSpeechRecognition();
     const isExplicitMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
     if (!isTauri() && isExplicitMock) {
       _mockTimer = setInterval(() => {
@@ -147,6 +218,7 @@ export async function handleStop(): Promise<void> {
   try {
     await stopSession(_sessionId);
     _stopMockTimer();
+    _stopSpeechRecognition();
     _unlistenTranscript?.();
     _unlistenTranscript = null;
     sessionStatus.set('stopped');

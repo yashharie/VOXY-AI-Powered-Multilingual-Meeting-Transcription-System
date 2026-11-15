@@ -68,6 +68,35 @@
       </html>
     `;
 
+    // Try hidden iframe print first (works inside Tauri without popups)
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+
+      const frameDoc = iframe.contentWindow?.document;
+      if (frameDoc) {
+        frameDoc.open();
+        frameDoc.write(html);
+        frameDoc.close();
+        setTimeout(() => {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+          setTimeout(() => {
+            try { document.body.removeChild(iframe); } catch {}
+          }, 3000);
+        }, 300);
+        return;
+      }
+    } catch {
+      // Fallback to window.open if iframe is blocked
+    }
+
     const printWin = window.open('', '_blank');
     if (printWin) {
       printWin.document.write(html);
