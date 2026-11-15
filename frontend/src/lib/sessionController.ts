@@ -116,16 +116,28 @@ function _startSpeechRecognition(): void {
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    // Set speech recognition language:
-    // If user explicitly picks Tamil or Sinhala, use that dialect.
-    // Otherwise, default to en-US for high-fidelity English/Zoom recognition.
+    // Set speech recognition language based on explicit spoken language setting.
+    // When "Auto-Detect" is selected, fall back to target language so the
+    // recognizer outputs native script (Tamil/Sinhala Unicode) rather than
+    // romanised English phonemes (enna nadakuthu → என்ன நடக்கிறது).
     const spoken = get(spokenLanguage);
+    const target = get(targetLanguage);
+
     if (spoken === 'ta') {
       recognition.lang = 'ta-LK';
     } else if (spoken === 'si') {
       recognition.lang = 'si-LK';
-    } else {
+    } else if (spoken === 'en') {
       recognition.lang = 'en-US';
+    } else {
+      // spoken === 'auto' — mirror the target language so native script is captured
+      if (target === 'ta') {
+        recognition.lang = 'ta-LK';
+      } else if (target === 'si') {
+        recognition.lang = 'si-LK';
+      } else {
+        recognition.lang = 'en-US';
+      }
     }
 
     recognition.onresult = async (event: any) => {
