@@ -2,60 +2,101 @@
  * Tauri IPC bridge.
  *
  * Calls real Tauri commands when running inside the Tauri shell.
- * Falls back to mock implementations during browser-based development
- * so the UI can be developed and demoed without the Rust backend.
+ * Falls back to mock implementations during browser-based development.
  */
 
 import type { AudioDevice, SessionStatus, TranscriptSegment } from '../types';
 
-// ── Tauri availability check ─────────────────────────────────────────────────
+// ── Tauri availability check ──────────────────────────────────────────────────
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI__' in window;
 }
 
-async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (isTauri()) {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<T>(command, args);
-  }
-  throw new Error(`Tauri not available: cannot invoke "${command}"`);
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+  return tauriInvoke<T>(command, args);
 }
 
-// ── Session commands ─────────────────────────────────────────────────────────
+// ── Session info type (mirrors Rust SessionInfo) ──────────────────────────────
 
-export async function startSession(deviceId: string): Promise<void> {
-  if (isTauri()) {
-    await invokeCommand('start_session', { deviceId });
-  }
-  // mock: no-op — session state is managed in the store
+export interface SessionInfo {
+  session_id: string;
+  state: string;
+  created_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+  display_name: string;
 }
 
-export async function pauseSession(): Promise<void> {
-  if (isTauri()) {
-    await invokeCommand('pause_session');
-  }
+type IpcResult<T> = { Ok: T } | { Err: { code: string; message: string } };
+
+function unwrap<T>(result: IpcResult<T>): T {
+  if ('Ok' in result) return result.Ok;
+  throw new Error(`[${result.Err.code}] ${result.Err.message}`);
 }
 
-export async function resumeSession(): Promise<void> {
-  if (isTauri()) {
-    await invokeCommand('resume_session');
-  }
+// ── Session lifecycle commands ────────────────────────────────────────────────
+
+export interface SessionConfig {
+  audio_source: 'Loopback' | 'Microphone' | 'Both';
+  language_hint: string;
+  enable_diarization: boolean;
+  show_partial_results: boolean;
 }
 
-export async function stopSession(): Promise<void> {
+export async function initSession(config: SessionConfig): Promise<SessionInfo> {
   if (isTauri()) {
-    await invokeCommand('stop_session');
+    const result = await invoke<IpcResult<SessionInfo>>('init_session', { config });
+    return unwrap(result);
   }
+  // Mock for browser dev
+  return {
+    session_id: `mock-${Date.now()}`,
+    state: 'Initializing',
+    created_at: Date.now() / 1000,
+    started_at: null,
+    ended_at: null,
+    display_name: 'Mock Session',
+  };
 }
 
-// ── Audio device commands ────────────────────────────────────────────────────
+export async function startSession(sessionId: string): Promise<SessionInfo> {
+  if (isTauri()) {
+    const result = await invoke<IpcResult<SessionInfo>>('start_session', { session_id: sessionId });
+    return unwrap(result);
+  }
+  return { session_id: sessionId, state: 'Active', created_at: 0, started_at: Date.now() / 1000, ended_at: null, display_name: '' };
+}
+
+export async function pauseSession(sessionId: string): Promise<SessionInfo> {
+  if (isTauri()) {
+    const result = await invoke<IpcResult<SessionInfo>>('pause_session', { session_id: sessionId });
+    return unwrap(result);
+  }
+  return { session_id: sessionId, state: 'Paused', created_at: 0, started_at: null, ended_at: null, display_name: '' };
+}
+
+export async function resumeSession(sessionId: string): Promise<SessionInfo> {
+  if (isTauri()) {
+    const result = await invoke<IpcResult<SessionInfo>>('resume_session', { session_id: sessionId });
+    return unwrap(result);
+  }
+  return { session_id: sessionId, state: 'Active', created_at: 0, started_at: null, ended_at: null, display_name: '' };
+}
+
+export async function stopSession(sessionId: string): Promise<SessionInfo> {
+  if (isTauri()) {
+    const result = await invoke<IpcResult<SessionInfo>>('stop_session', { session_id: sessionId });
+    return unwrap(result);
+  }
+  return { session_id: sessionId, state: 'Stopped', created_at: 0, started_at: null, ended_at: null, display_name: '' };
+}
+
+// ── Audio device commands ─────────────────────────────────────────────────────
 
 export async function listAudioDevices(): Promise<AudioDevice[]> {
-  if (isTauri()) {
-    return invokeCommand<AudioDevice[]>('list_audio_devices');
-  }
-  // Mock devices for browser development
+  // Audio device listing not yet implemented in backend — return mock list
   return [
     { id: 'default', name: 'Default Output Device', is_default: true },
     { id: 'dev-1', name: 'Speakers (Realtek Audio)', is_default: false },
@@ -63,19 +104,18 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
   ];
 }
 
-// ── Transcript event listener ────────────────────────────────────────────────
+// ── Tauri event listeners ─────────────────────────────────────────────────────
 
 export async function onTranscriptSegment(
   callback: (segment: TranscriptSegment) => void,
 ): Promise<() => void> {
   if (isTauri()) {
     const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen<TranscriptSegment>('transcript_segment', (event) => {
+    const unlisten = await listen<TranscriptSegment>('voxy://transcript-segment', (event) => {
       callback(event.payload);
     });
     return unlisten;
   }
-  // Return a no-op unsubscribe for browser development
   return () => {};
 }
 
@@ -84,28 +124,21 @@ export async function onSessionStatusChange(
 ): Promise<() => void> {
   if (isTauri()) {
     const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen<SessionStatus>('session_status', (event) => {
-      callback(event.payload);
+    const unlisten = await listen<{ new_state: string }>('voxy://session-state-changed', (event) => {
+      // Map Rust SessionState to our frontend SessionStatus
+      const stateMap: Record<string, SessionStatus> = {
+        Idle: 'idle', Initializing: 'starting', Active: 'active',
+        Paused: 'paused', Stopping: 'stopping', Stopped: 'stopped', Error: 'idle',
+      };
+      const mapped = stateMap[event.payload.new_state] ?? 'idle';
+      callback(mapped as SessionStatus);
     });
     return unlisten;
   }
   return () => {};
 }
 
-// ── Transcript export command ────────────────────────────────────────────────
-
-/**
- * Ask the Rust backend to save the transcript to a file chosen by the user.
- * Falls back to browser download when running outside Tauri.
- */
-export async function exportTranscriptViaBackend(content: string): Promise<void> {
-  if (isTauri()) {
-    await invokeCommand('export_transcript', { content });
-  }
-  // Browser fallback is handled directly in TranscriptActions via downloadTextFile
-}
-
-// ── Diagnostics event listener ────────────────────────────────────────────────
+// ── Diagnostics ───────────────────────────────────────────────────────────────
 
 export interface DiagnosticsPayload {
   latency_ms: number | null;
@@ -124,4 +157,11 @@ export async function onDiagnosticsUpdate(
     return unlisten;
   }
   return () => {};
+}
+
+export async function exportTranscriptViaBackend(content: string): Promise<void> {
+  if (isTauri()) {
+    const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+    await tauriInvoke('export_transcript', { content });
+  }
 }

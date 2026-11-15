@@ -2,8 +2,8 @@
  * Session controller — persistent application-level session lifecycle manager.
  *
  * Lives at the App root level and is never destroyed by navigation.
- * All session state mutations happen here; components only read from
- * the stores and call the exported functions.
+ * Follows the real Tauri IPC contract:
+ *   init_session(config) → session_id → start_session(session_id)
  */
 
 import {
@@ -14,8 +14,10 @@ import {
   segments,
   appendSegment,
   clearSession,
+  audioDevices,
 } from './sessionStore';
 import {
+  initSession,
   startSession,
   pauseSession,
   resumeSession,
@@ -23,31 +25,30 @@ import {
   listAudioDevices,
   onTranscriptSegment,
   onSessionStatusChange,
+  isTauri,
 } from './tauri';
-import { audioDevices } from './sessionStore';
 import { nextMockSegment, resetMockSegments } from './mockData';
 import type { SessionStatus } from '../types';
 import { get } from 'svelte/store';
 
-// ── Internal state (not reactive stores — lives here only) ────────────────────
+// ── Internal state ────────────────────────────────────────────────────────────
 
+let _sessionId: string | null = null;
 let _unlistenTranscript: (() => void) | null = null;
 let _unlistenStatus: (() => void) | null = null;
 let _mockTimer: ReturnType<typeof setInterval> | null = null;
 let _initialized = false;
 
-// ── Initialise once at app startup ────────────────────────────────────────────
+// ── Init once at app startup ──────────────────────────────────────────────────
 
 export async function initSessionController(): Promise<void> {
   if (_initialized) return;
   _initialized = true;
 
-  // Load audio devices
   const devices = await listAudioDevices();
   audioDevices.set(devices);
   if (devices.length > 0) {
     const current = get(selectedDeviceId);
-    // Only set default if no device is already selected or current is unknown
     const known = devices.find((d) => d.id === current);
     if (!known) {
       selectedDeviceId.set(
@@ -56,7 +57,6 @@ export async function initSessionController(): Promise<void> {
     }
   }
 
-  // Listen for backend session status events
   _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
     sessionStatus.set(status);
   });
@@ -64,19 +64,25 @@ export async function initSessionController(): Promise<void> {
 
 // ── Session commands ──────────────────────────────────────────────────────────
 
-export async function handleStart(deviceId: string): Promise<void> {
+export async function handleStart(_deviceId: string): Promise<void> {
   errorMessage.set(null);
-
-  // Snapshot current segments in case start fails — restore them
   const previousSegments = get(segments);
-
-  // Clear only after confirming we can proceed
   sessionStatus.set('starting');
 
   try {
-    await startSession(deviceId);
+    // Step 1: Create the session on the backend
+    const sessionInfo = await initSession({
+      audio_source: 'Loopback',
+      language_hint: 'auto',
+      enable_diarization: false,
+      show_partial_results: true,
+    });
 
-    // Start succeeded — now clear previous session data
+    _sessionId = sessionInfo.session_id;
+
+    // Step 2: Start the session
+    await startSession(_sessionId);
+
     clearSession();
     resetMockSegments();
 
@@ -87,8 +93,8 @@ export async function handleStart(deviceId: string): Promise<void> {
     sessionStatus.set('active');
     sessionStartTime.set(Date.now());
 
-    // Mock feed for browser development (no Tauri shell)
-    if (!('__TAURI__' in window)) {
+    // Mock feed when not in Tauri (browser dev) or when backend has no audio yet
+    if (!isTauri()) {
       _mockTimer = setInterval(() => {
         if (get(sessionStatus) === 'active') {
           appendSegment(nextMockSegment());
@@ -96,31 +102,30 @@ export async function handleStart(deviceId: string): Promise<void> {
       }, 2500);
     }
   } catch (err) {
-    // Restore previous transcript — start failed, nothing was cleared yet
     errorMessage.set(String(err));
     sessionStatus.set('idle');
-    // Segments were not cleared (clearSession was not called before failure)
     segments.set(previousSegments);
+    _sessionId = null;
   }
 }
 
 export async function handlePause(): Promise<void> {
+  if (!_sessionId) return;
   try {
-    await pauseSession();
+    await pauseSession(_sessionId);
     sessionStatus.set('paused');
     _stopMockTimer();
   } catch (err) {
     errorMessage.set(String(err));
-    // Status remains active — backend did not confirm pause
   }
 }
 
 export async function handleResume(): Promise<void> {
+  if (!_sessionId) return;
   try {
-    await resumeSession();
+    await resumeSession(_sessionId);
     sessionStatus.set('active');
-
-    if (!('__TAURI__' in window)) {
+    if (!isTauri()) {
       _mockTimer = setInterval(() => {
         if (get(sessionStatus) === 'active') {
           appendSegment(nextMockSegment());
@@ -129,30 +134,27 @@ export async function handleResume(): Promise<void> {
     }
   } catch (err) {
     errorMessage.set(String(err));
-    // Status remains paused — backend did not confirm resume
   }
 }
 
 export async function handleStop(): Promise<void> {
-  // Record the pre-stop status so we can restore it if stop fails
+  if (!_sessionId) return;
   const previousStatus = get(sessionStatus);
   sessionStatus.set('stopping');
 
   try {
-    await stopSession();
+    await stopSession(_sessionId);
     _stopMockTimer();
     _unlistenTranscript?.();
     _unlistenTranscript = null;
     sessionStatus.set('stopped');
     sessionStartTime.set(null);
+    _sessionId = null;
   } catch (err) {
     errorMessage.set(String(err));
-    // Restore previous status — stop failed, session may still be running
     sessionStatus.set(previousStatus);
   }
 }
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
 
 function _stopMockTimer(): void {
   if (_mockTimer) {
