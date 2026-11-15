@@ -9,7 +9,7 @@ import type {
   SessionInfo,
   SessionState,
   TranscriptSegment,
-} from "$lib/types";
+} from "../lib/types";
 import {
   initSession,
   startSession,
@@ -17,14 +17,14 @@ import {
   resumeSession,
   stopSession,
   getSessionInfo,
-} from "$lib/ipc";
+} from "../lib/ipc";
 import {
   onSessionStateChanged,
   onTranscriptSegment,
   onError,
   onAudioLevel,
   onSessionCleanupDone,
-} from "$lib/events";
+} from "../lib/events";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
