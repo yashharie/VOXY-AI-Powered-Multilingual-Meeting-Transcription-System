@@ -122,26 +122,63 @@ export async function stopSession(sessionId: string): Promise<SessionInfo> {
 
 export async function listAudioDevices(): Promise<AudioDevice[]> {
   try {
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices) {
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+      // First try to request audio stream briefly so Windows/browser populates real hardware device labels
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+      } catch {
+        // User may have already allowed or prompt handled
+      }
+
       const devs = await navigator.mediaDevices.enumerateDevices();
-      const audioDevs = devs.filter((d) => d.kind === 'audiooutput' || d.kind === 'audioinput');
-      if (audioDevs.length > 0) {
-        return audioDevs.map((d, i) => ({
-          id: d.deviceId || `dev-${i}`,
-          name: d.label || (d.kind === 'audiooutput' ? `System Speaker ${i + 1}` : `Microphone ${i + 1}`),
-          is_default: i === 0,
-        }));
+      const audioInputs = devs.filter((d) => d.kind === 'audioinput');
+      const audioOutputs = devs.filter((d) => d.kind === 'audiooutput');
+
+      const result: AudioDevice[] = [];
+
+      // Always include Default option
+      result.push({
+        id: 'default',
+        name: 'Default Audio (System Loopback / Mic)',
+        is_default: true,
+      });
+
+      // Add actual input devices (Microphones, Stereo Mix, Headsets)
+      audioInputs.forEach((d, i) => {
+        if (d.deviceId && d.deviceId !== 'default') {
+          result.push({
+            id: d.deviceId,
+            name: d.label || `Microphone ${i + 1}`,
+            is_default: false,
+          });
+        }
+      });
+
+      // Add output devices (Speakers, Virtual Audio Cables, Headphones)
+      audioOutputs.forEach((d, i) => {
+        if (d.deviceId && d.deviceId !== 'default') {
+          result.push({
+            id: d.deviceId,
+            name: d.label ? `Output: ${d.label}` : `Speaker ${i + 1}`,
+            is_default: false,
+          });
+        }
+      });
+
+      if (result.length > 1) {
+        return result;
       }
     }
-  } catch {
-    // Ignore and fallback
+  } catch (err) {
+    console.warn('listAudioDevices error:', err);
   }
 
   return [
-    { id: 'default', name: 'Default Audio Output (System Loopback)', is_default: true },
-    { id: 'dev-speakers', name: 'Speakers (Realtek Audio)', is_default: false },
-    { id: 'dev-headphones', name: 'Headphones / Headset', is_default: false },
-    { id: 'dev-mic', name: 'Default Microphone (Input)', is_default: false },
+    { id: 'default', name: 'Default Audio (System Loopback & Mic)', is_default: true },
+    { id: 'dev-speakers', name: 'Speakers / Headset (Meeting Audio)', is_default: false },
+    { id: 'dev-mic', name: 'Microphone (Voice Input)', is_default: false },
+    { id: 'dev-stereomix', name: 'Stereo Mix (System Loopback)', is_default: false },
   ];
 }
 

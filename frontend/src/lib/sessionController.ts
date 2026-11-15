@@ -13,6 +13,7 @@ import {
   sessionStartTime,
   segments,
   appendSegment,
+  upsertSegment,
   clearSession,
   audioDevices,
   targetLanguage,
@@ -40,6 +41,8 @@ let _unlistenTranscript: (() => void) | null = null;
 let _unlistenStatus: (() => void) | null = null;
 let _mockTimer: ReturnType<typeof setInterval> | null = null;
 let _speechRecognition: any = null;
+let _mediaStream: MediaStream | null = null;
+let _interimId: string | null = null;
 let _initialized = false;
 
 export function detectLanguage(text: string): 'ta' | 'si' | 'en' | 'und' {
@@ -113,33 +116,30 @@ function _startSpeechRecognition(): void {
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    // Set speech recognition language based on user's selection
+    // Set speech recognition language:
+    // If user explicitly picks Tamil or Sinhala, use that dialect.
+    // Otherwise, default to en-US for high-fidelity English/Zoom recognition.
     const spoken = get(spokenLanguage);
     if (spoken === 'ta') {
       recognition.lang = 'ta-LK';
     } else if (spoken === 'si') {
       recognition.lang = 'si-LK';
-    } else if (spoken === 'en') {
-      recognition.lang = 'en-US';
     } else {
-      const target = get(targetLanguage);
-      if (target === 'ta') {
-        recognition.lang = 'ta-LK';
-      } else if (target === 'si') {
-        recognition.lang = 'si-LK';
-      } else {
-        recognition.lang = 'en-US';
-      }
+      recognition.lang = 'en-US';
     }
 
     recognition.onresult = async (event: any) => {
       if (get(sessionStatus) !== 'active') return;
+
+      let interimText = '';
+
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         const item = event.results[i];
         const rawText = item[0]?.transcript?.trim();
         if (!rawText) continue;
 
         if (item.isFinal) {
+          // Sentence finalized
           const target = get(targetLanguage);
           const { text, language, detectedLang } = await translateSegment(rawText, target);
           const startTime = get(sessionStartTime) ?? Date.now();
@@ -150,15 +150,47 @@ function _startSpeechRecognition(): void {
             speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${target.toUpperCase()})`;
           }
 
-          appendSegment({
-            id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            text,
-            start_time: Math.max(0, elapsedSec - 2.5),
-            end_time: elapsedSec,
-            speaker: speakerLabel,
-            language,
-          });
+          if (_interimId) {
+            // Replace the interim segment with the finalized translated segment
+            upsertSegment({
+              id: _interimId,
+              text,
+              start_time: Math.max(0, elapsedSec - 2.5),
+              end_time: elapsedSec,
+              speaker: speakerLabel,
+              language,
+            });
+            _interimId = null;
+          } else {
+            appendSegment({
+              id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              text,
+              start_time: Math.max(0, elapsedSec - 2.5),
+              end_time: elapsedSec,
+              speaker: speakerLabel,
+              language,
+            });
+          }
+        } else {
+          interimText += rawText + ' ';
         }
+      }
+
+      // Real-time instant display for words being spoken right now (0s delay!)
+      if (interimText.trim()) {
+        if (!_interimId) {
+          _interimId = `interim-${Date.now()}`;
+        }
+        const startTime = get(sessionStartTime) ?? Date.now();
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        upsertSegment({
+          id: _interimId,
+          text: interimText.trim() + ' …',
+          start_time: Math.max(0, elapsedSec - 1),
+          end_time: elapsedSec,
+          speaker: 'Live Speaker',
+          language: get(targetLanguage) === 'auto' ? 'en' : (get(targetLanguage) as any),
+        });
       }
     };
 
@@ -188,6 +220,16 @@ function _stopSpeechRecognition(): void {
     } catch {}
     _speechRecognition = null;
   }
+  _interimId = null;
+}
+
+function _stopMediaStream(): void {
+  if (_mediaStream) {
+    try {
+      _mediaStream.getTracks().forEach((t) => t.stop());
+    } catch {}
+    _mediaStream = null;
+  }
 }
 
 // ── Init once at app startup ──────────────────────────────────────────────────
@@ -208,6 +250,14 @@ export async function initSessionController(): Promise<void> {
     }
   }
 
+  // Also update devices when hardware devices change (headphones, mic, Zoom audio)
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      const updated = await listAudioDevices();
+      audioDevices.set(updated);
+    });
+  }
+
   _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
     sessionStatus.set(status);
   });
@@ -221,10 +271,20 @@ export async function handleStart(_deviceId: string): Promise<void> {
   sessionStatus.set('starting');
 
   try {
+    // Determine audio source based on selected device name
+    const devs = get(audioDevices);
+    const chosen = devs.find((d) => d.id === _deviceId);
+    let audioSource: 'Loopback' | 'Microphone' | 'Both' = 'Both';
+    if (chosen?.name.toLowerCase().includes('mic')) {
+      audioSource = 'Microphone';
+    } else if (chosen?.name.toLowerCase().includes('speaker') || chosen?.name.toLowerCase().includes('loopback')) {
+      audioSource = 'Loopback';
+    }
+
     // Step 1: Create the session on the backend
     const sessionInfo = await initSession({
-      audio_source: 'Loopback',
-      language_hint: 'auto',
+      audio_source: audioSource,
+      language_hint: get(spokenLanguage) || 'auto',
       enable_diarization: false,
       show_partial_results: true,
     });
@@ -233,6 +293,20 @@ export async function handleStart(_deviceId: string): Promise<void> {
 
     // Step 2: Start the session
     await startSession(_sessionId);
+
+    // Bind media capture stream to chosen device
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      try {
+        const constraints: MediaStreamConstraints = {
+          audio: _deviceId && _deviceId !== 'default'
+            ? { deviceId: { exact: _deviceId } }
+            : true,
+        };
+        _mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (e) {
+        console.warn('Could not bind chosen audio device stream directly:', e);
+      }
+    }
 
     clearSession();
     resetMockSegments();
@@ -286,6 +360,7 @@ export async function handlePause(): Promise<void> {
     sessionStatus.set('paused');
     _stopMockTimer();
     _stopSpeechRecognition();
+    _stopMediaStream();
   } catch (err) {
     errorMessage.set(String(err));
   }
@@ -319,6 +394,7 @@ export async function handleStop(): Promise<void> {
     await stopSession(_sessionId);
     _stopMockTimer();
     _stopSpeechRecognition();
+    _stopMediaStream();
     _unlistenTranscript?.();
     _unlistenTranscript = null;
     sessionStatus.set('stopped');

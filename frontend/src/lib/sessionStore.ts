@@ -49,6 +49,18 @@ export function appendSegment(segment: TranscriptSegment): void {
   segments.update((all) => [...all, segment]);
 }
 
+export function upsertSegment(segment: TranscriptSegment): void {
+  segments.update((all) => {
+    const idx = all.findIndex((s) => s.id === segment.id);
+    if (idx >= 0) {
+      const copy = [...all];
+      copy[idx] = segment;
+      return copy;
+    }
+    return [...all, segment];
+  });
+}
+
 export function updateSegmentText(id: string, text: string): void {
   segments.update((all) =>
     all.map((s) => (s.id === id ? { ...s, text } : s)),
