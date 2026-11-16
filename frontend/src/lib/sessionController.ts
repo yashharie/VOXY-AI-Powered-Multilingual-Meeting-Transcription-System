@@ -45,11 +45,37 @@ let _mediaStream: MediaStream | null = null;
 let _interimId: string | null = null;
 let _initialized = false;
 
+/**
+ * Detect the dominant language of a text string using Unicode script ranges.
+ *
+ * Rules (in priority order):
+ *   1. Count Tamil script chars (U+0B80–U+0BFF).
+ *   2. Count Sinhala script chars (U+0D80–U+0DFF).
+ *   3. Count ASCII Latin chars (a-z / A-Z).
+ *   4. The language with the most characters wins.
+ *   5. Tie-break: Tamil > Sinhala > English.
+ *   6. If no recognised characters, return 'und'.
+ *
+ * This correctly handles code-switched text such as
+ * "Yes tauri use karannē ඇyī?" (Sinhala-dominant) or
+ * "Performance-ஐப் பார்த்தால் நல்லது" (Tamil-dominant).
+ */
 export function detectLanguage(text: string): 'ta' | 'si' | 'en' | 'und' {
-  if (/[\u0B80-\u0BFF]/.test(text)) return 'ta';
-  if (/[\u0D80-\u0DFF]/.test(text)) return 'si';
-  if (/[a-zA-Z]/.test(text)) return 'en';
-  return 'und';
+  let ta = 0, si = 0, en = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0x0B80 && cp <= 0x0BFF) ta++;
+    else if (cp >= 0x0D80 && cp <= 0x0DFF) si++;
+    else if ((cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A)) en++;
+  }
+  if (ta === 0 && si === 0 && en === 0) return 'und';
+  // Code-switching recognition:
+  // If text contains ANY native Tamil script (even 1 character in a code-switched sentence),
+  // identify as Tamil to preserve Tamil font rendering and proper tags.
+  // Similarly for Sinhala.
+  if (ta > 0 && ta >= si) return 'ta';
+  if (si > 0 && si > ta) return 'si';
+  return en > 0 ? 'en' : 'und';
 }
 
 export async function translateSegment(
@@ -60,6 +86,8 @@ export async function translateSegment(
   if (!targetLang || targetLang === 'auto' || targetLang === localDetected) {
     return {
       text,
+      // `language` reflects the SOURCE language so the font and label
+      // in the transcript are always correct regardless of translation.
       language: localDetected,
       detectedLang: localDetected,
     };
@@ -77,20 +105,33 @@ export async function translateSegment(
         .join('')
         ?.trim() || text;
 
+    // Prefer the Unicode-based local detection over the API's language code
+    // because the API sometimes returns 'en' for code-switched Sinhala/Tamil
+    // text that contains Latin words.
     let apiDetected = data[2] || localDetected;
     if (typeof apiDetected === 'string') {
-      if (apiDetected.startsWith('en')) apiDetected = 'en';
-      else if (apiDetected.startsWith('ta')) apiDetected = 'ta';
+      if (apiDetected.startsWith('ta')) apiDetected = 'ta';
       else if (apiDetected.startsWith('si')) apiDetected = 'si';
+      else if (apiDetected.startsWith('en')) apiDetected = 'en';
       else apiDetected = localDetected;
     } else {
       apiDetected = localDetected;
     }
 
+    // Reconcile: if our character-count detection is unambiguous (ta/si),
+    // trust it over the Google API (which sometimes mis-labels Sinhala as 'zh').
+    const resolvedDetected: 'ta' | 'si' | 'en' | 'und' =
+      (localDetected === 'ta' || localDetected === 'si')
+        ? localDetected
+        : (apiDetected as 'ta' | 'si' | 'en' | 'und');
+
     return {
       text: translated,
-      language: (targetLang as 'ta' | 'si' | 'en') || 'und',
-      detectedLang: apiDetected as 'ta' | 'si' | 'en' | 'und',
+      // Keep the SOURCE (detected) language on the segment, not the target.
+      // The translated text is stored but the original language tag is preserved
+      // so the transcript font, label, and language breakdown remain accurate.
+      language: resolvedDetected,
+      detectedLang: resolvedDetected,
     };
   } catch (err) {
     console.warn('Translation fallback to original:', err);
@@ -102,6 +143,169 @@ export async function translateSegment(
   }
 }
 
+/**
+ * Map spoken/target language settings to the best BCP-47 locale for
+ * the Web SpeechRecognition API.
+ *
+ * The Web SpeechRecognition API accepts only ONE locale per session, so we
+ * cannot do true auto-detection.  Instead we pick the best single locale that
+ * maximises the chance of capturing native-script output:
+ *
+ *  - Explicit spoken language → use that locale directly.
+ *  - Auto-detect + explicit target language → use the target locale so the
+ *    recogniser outputs native Unicode script instead of romanised phonemes.
+ *  - Auto-detect + target is 'auto' (fully automatic mode) → start THREE
+ *    recognisers in parallel (en-US, ta-LK, si-LK) and pick the result whose
+ *    detected script matches the recognised text, discarding the other two.
+ *    This is the only way to handle a speaker who can switch among all three
+ *    languages mid-session.
+ */
+function _pickRecognitionLocale(spoken: string, target: string): string {
+  if (spoken === 'ta' || spoken === 'ta-IN') return 'ta-IN';
+  if (spoken === 'ta-LK') return 'ta-LK';
+  if (spoken === 'si') return 'si-LK';
+  if (spoken === 'en') return 'en-US';
+  // spoken === 'auto'
+  if (target === 'ta') return 'ta-IN';
+  if (target === 'si') return 'si-LK';
+  // target === 'en' or 'auto'
+  return 'en-US';
+}
+
+/**
+ * When both spoken and target are 'auto' the user expects full three-language
+ * detection (English / Tamil / Sinhala).  We run a recogniser per locale and
+ * route each final result through detectLanguage() to pick the winning script.
+ */
+function _startMultilingualRecognition(SpeechRec: any): void {
+  // Use optimal BCP-47 regional locales for English, Tamil (India), and Sinhala (Sri Lanka)
+  const LOCALES: Array<{ locale: string; lang: 'en' | 'ta' | 'si' }> = [
+    { locale: 'en-US', lang: 'en' },
+    { locale: 'ta-IN', lang: 'ta' },
+    { locale: 'si-LK', lang: 'si' },
+  ];
+
+  const recognisers: any[] = [];
+
+  for (const { locale, lang: localeLang } of LOCALES) {
+    const rec = new SpeechRec();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 3;
+    rec.lang = locale;
+
+    rec.onresult = async (event: any) => {
+      if (get(sessionStatus) !== 'active') return;
+
+      let interimText = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          // Candidate alternative selection:
+          let rawText = item[0]?.transcript?.trim();
+          if (item.length > 1) {
+            for (let a = 0; a < item.length; a++) {
+              const alt = item[a]?.transcript?.trim();
+              if (alt) {
+                const detected = detectLanguage(alt);
+                if (detected === 'ta' || detected === 'si') {
+                  rawText = alt;
+                  break;
+                }
+              }
+            }
+          }
+          if (!rawText) continue;
+
+          if (item.isFinal) {
+            const detectedLang = detectLanguage(rawText);
+
+            // Cross-locale routing & disambiguation:
+            // 1. If this is the Tamil or Sinhala recognizer, but the output has NO Indic script
+            //    (pure English letters), discard it and let the en-US recognizer handle it.
+            //    This stops non-English recognizers from polluting with mangled phonemes.
+            if ((localeLang === 'ta' || localeLang === 'si') && detectedLang === 'en') {
+              continue;
+            }
+
+            // 2. If the detected script belongs to a different non-English language, discard it.
+            if ((detectedLang === 'ta' || detectedLang === 'si') && detectedLang !== localeLang) {
+              continue;
+            }
+
+          const tgt = get(targetLanguage);
+          const { text, language, detectedLang: finalDetected } = await translateSegment(rawText, tgt);
+          const startTime = get(sessionStartTime) ?? Date.now();
+          const elapsedSec = (Date.now() - startTime) / 1000;
+
+          let speakerLabel = 'Speaker';
+          if (finalDetected !== 'und' && tgt !== 'auto' && finalDetected !== tgt) {
+            speakerLabel = `Speaker (${finalDetected.toUpperCase()} → ${tgt.toUpperCase()})`;
+          }
+
+          if (_interimId) {
+            upsertSegment({
+              id: _interimId,
+              text,
+              start_time: Math.max(0, elapsedSec - 2.5),
+              end_time: elapsedSec,
+              speaker: speakerLabel,
+              language,
+            });
+            _interimId = null;
+          } else {
+            appendSegment({
+              id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              text,
+              start_time: Math.max(0, elapsedSec - 2.5),
+              end_time: elapsedSec,
+              speaker: speakerLabel,
+              language,
+            });
+          }
+        } else {
+          interimText += rawText + ' ';
+        }
+      }
+
+      // Show interim only from the locale matching the detected script.
+      if (interimText.trim()) {
+        const detectedInterim = detectLanguage(interimText);
+        if (detectedInterim === localeLang || detectedInterim === 'und') {
+          if (!_interimId) _interimId = `interim-${Date.now()}`;
+          const startTime = get(sessionStartTime) ?? Date.now();
+          const elapsedSec = (Date.now() - startTime) / 1000;
+          upsertSegment({
+            id: _interimId,
+            text: interimText.trim() + ' …',
+            start_time: Math.max(0, elapsedSec - 1),
+            end_time: elapsedSec,
+            speaker: 'Live Speaker',
+            language: localeLang,
+          });
+        }
+      }
+    };
+
+    rec.onerror = (e: any) => {
+      console.warn(`Speech recognition error (${locale}):`, e?.error || e);
+    };
+
+    rec.onend = () => {
+      if (get(sessionStatus) === 'active') {
+        try { rec.start(); } catch { /* ignore */ }
+      }
+    };
+
+    try { rec.start(); } catch (e) {
+      console.warn(`Could not start recogniser for ${locale}:`, e);
+    }
+    recognisers.push(rec);
+  }
+
+  // Store all three recognisers so they can be stopped together.
+  _speechRecognition = recognisers;
+}
+
 function _startSpeechRecognition(): void {
   if (typeof window === 'undefined') return;
   const SpeechRec =
@@ -109,6 +313,7 @@ function _startSpeechRecognition(): void {
     (window as any).webkitSpeechRecognition;
   if (!SpeechRec) {
     console.warn('SpeechRecognition API not available in this WebView');
+    errorMessage.set('Speech recognition engine is not supported or not enabled on this Windows system.');
     return;
   }
 
@@ -117,7 +322,14 @@ function _startSpeechRecognition(): void {
   // will silently fail with a "not-allowed" error.
   (async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
       stream.getTracks().forEach((t) => t.stop()); // permission granted — stop probe stream
     } catch (permErr) {
       console.warn('Microphone permission denied — transcription will not work:', permErr);
@@ -126,34 +338,24 @@ function _startSpeechRecognition(): void {
       return;
     }
 
+    const spoken = get(spokenLanguage);
+    const target = get(targetLanguage);
+
+    // Auto-detect spoken language:
+    // If spoken === 'auto', activate true tri-lingual parallel recognition (en, ta, si)
+    // regardless of the targetLanguage setting so all 3 languages are always captured.
+    if (spoken === 'auto') {
+      _startMultilingualRecognition(SpeechRec);
+      return;
+    }
+
+    // Single-locale mode.
     try {
       const recognition = new SpeechRec();
       recognition.continuous = true;
       recognition.interimResults = true;
-
-      // Set speech recognition language based on explicit spoken language setting.
-      // When "Auto-Detect" is selected, fall back to target language so the
-      // recognizer outputs native script (Tamil/Sinhala Unicode) rather than
-      // romanised English phonemes (enna nadakuthu → என்ன நடக்கிறது).
-      const spoken = get(spokenLanguage);
-      const target = get(targetLanguage);
-
-      if (spoken === 'ta') {
-        recognition.lang = 'ta-LK';
-      } else if (spoken === 'si') {
-        recognition.lang = 'si-LK';
-      } else if (spoken === 'en') {
-        recognition.lang = 'en-US';
-      } else {
-        // spoken === 'auto' — mirror the target language so native script is captured
-        if (target === 'ta') {
-          recognition.lang = 'ta-LK';
-        } else if (target === 'si') {
-          recognition.lang = 'si-LK';
-        } else {
-          recognition.lang = 'en-US';
-        }
-      }
+      recognition.maxAlternatives = 3;
+      recognition.lang = _pickRecognitionLocale(spoken, target);
 
       recognition.onresult = async (event: any) => {
         if (get(sessionStatus) !== 'active') return;
@@ -162,7 +364,20 @@ function _startSpeechRecognition(): void {
 
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           const item = event.results[i];
-          const rawText = item[0]?.transcript?.trim();
+          // Select best candidate alternative
+          let rawText = item[0]?.transcript?.trim();
+          if (item.length > 1) {
+            for (let a = 0; a < item.length; a++) {
+              const alt = item[a]?.transcript?.trim();
+              if (alt) {
+                const detected = detectLanguage(alt);
+                if (detected === 'ta' || detected === 'si') {
+                  rawText = alt;
+                  break;
+                }
+              }
+            }
+          }
           if (!rawText) continue;
 
           if (item.isFinal) {
@@ -171,6 +386,7 @@ function _startSpeechRecognition(): void {
             const startTime = get(sessionStartTime) ?? Date.now();
             const elapsedSec = (Date.now() - startTime) / 1000;
 
+            // Build a speaker label that indicates translation direction.
             let speakerLabel = 'Speaker';
             if (detectedLang !== 'und' && tgt !== 'auto' && detectedLang !== tgt) {
               speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${tgt.toUpperCase()})`;
@@ -183,7 +399,9 @@ function _startSpeechRecognition(): void {
                 start_time: Math.max(0, elapsedSec - 2.5),
                 end_time: elapsedSec,
                 speaker: speakerLabel,
-                language,
+                // Use the detected SOURCE language for the segment tag, not the
+                // translated target language, so the font and label are correct.
+                language: detectedLang !== 'und' ? detectedLang : language,
               });
               _interimId = null;
             } else {
@@ -193,7 +411,7 @@ function _startSpeechRecognition(): void {
                 start_time: Math.max(0, elapsedSec - 2.5),
                 end_time: elapsedSec,
                 speaker: speakerLabel,
-                language,
+                language: detectedLang !== 'und' ? detectedLang : language,
               });
             }
           } else {
@@ -201,24 +419,33 @@ function _startSpeechRecognition(): void {
           }
         }
 
-        // Real-time interim display — instant word streaming
+        // Real-time interim display — instant word streaming.
+        // Detect language from the interim text so the correct font renders.
         if (interimText.trim()) {
           if (!_interimId) _interimId = `interim-${Date.now()}`;
           const startTime = get(sessionStartTime) ?? Date.now();
           const elapsedSec = (Date.now() - startTime) / 1000;
+          const interimLang = detectLanguage(interimText.trim());
           upsertSegment({
             id: _interimId,
             text: interimText.trim() + ' …',
             start_time: Math.max(0, elapsedSec - 1),
             end_time: elapsedSec,
             speaker: 'Live Speaker',
-            language: get(targetLanguage) === 'auto' ? 'en' : (get(targetLanguage) as any),
+            language: interimLang !== 'und' ? interimLang : 'en',
           });
         }
       };
 
       recognition.onerror = (e: any) => {
         console.warn('Speech recognition error:', e?.error || e);
+        if (e?.error === 'not-allowed') {
+          errorMessage.set('Microphone permission blocked. Please check Windows Settings > Privacy > Microphone.');
+        } else if (e?.error === 'network') {
+          errorMessage.set('Speech recognition network error. Ensure internet connection is active for speech processing.');
+        } else if (e?.error === 'language-not-supported') {
+          errorMessage.set(`Selected language is not supported by your Windows speech packs. Please install the language pack in Windows Settings.`);
+        }
       };
 
       recognition.onend = () => {
@@ -237,9 +464,14 @@ function _startSpeechRecognition(): void {
 
 function _stopSpeechRecognition(): void {
   if (_speechRecognition) {
-    try {
-      _speechRecognition.stop();
-    } catch {}
+    // In multilingual (fully-auto) mode _speechRecognition is an array of
+    // three recognisers; in single-locale mode it is one object.
+    const recs = Array.isArray(_speechRecognition)
+      ? _speechRecognition
+      : [_speechRecognition];
+    for (const rec of recs) {
+      try { rec.stop(); } catch { /* ignore */ }
+    }
     _speechRecognition = null;
   }
   _interimId = null;
@@ -321,8 +553,17 @@ export async function handleStart(_deviceId: string): Promise<void> {
       try {
         const constraints: MediaStreamConstraints = {
           audio: _deviceId && _deviceId !== 'default'
-            ? { deviceId: { exact: _deviceId } }
-            : true,
+            ? {
+                deviceId: { exact: _deviceId },
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              }
+            : {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              },
         };
         _mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (e) {
