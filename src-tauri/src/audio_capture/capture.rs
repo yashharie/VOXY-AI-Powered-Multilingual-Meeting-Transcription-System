@@ -50,6 +50,12 @@ pub struct CaptureHandle {
     mic_thread: Option<thread::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for CaptureHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureHandle").finish()
+    }
+}
+
 impl CaptureHandle {
     /// Signal the capture threads to stop and wait for them to exit.
     pub fn stop(mut self) {

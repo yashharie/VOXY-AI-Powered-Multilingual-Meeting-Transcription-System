@@ -47,6 +47,13 @@ parking_lot = "0.12"
 # ── Audio processing — Member 4 ───────────────────────────────────────────────
 rubato = "0.16"
 
+# ── Windows audio capture — Member 3 ──────────────────────────────────────────
+wasapi = "0.14"
+
+# ── Speech recognition — Member 5 ─────────────────────────────────────────────
+# whisper-rs removed: using whisper.cpp CLI binary approach to avoid
+# Windows MSVC + LLVM 23 bindgen incompatibility with whisper-rs-sys.
+
 # ── Speaker analysis (VAD + diarization) — Member 6 ───────────────────────────
 # sherpa-onnx provides Silero VAD and speaker embedding via ONNX Runtime.
 # Optional: compile with `--features sherpa` to enable real model inference.

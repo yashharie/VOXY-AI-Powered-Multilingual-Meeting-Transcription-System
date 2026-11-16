@@ -6,11 +6,13 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use super::config::AppConfig;
 use super::error::{AppError, AppResult};
 use super::session::Session;
 use super::types::SessionConfig;
+use crate::core::pipeline::Pipeline;
 
 /// Application-wide shared state injected into Tauri commands.
 #[derive(Debug)]
@@ -21,6 +23,8 @@ pub struct AppState {
     active_session_id: RwLock<Option<String>>,
     /// Loaded application configuration.
     pub config: RwLock<AppConfig>,
+    /// The running pipeline for the active session (if any).
+    pub pipeline: Mutex<Option<Pipeline>>,
 }
 
 impl AppState {
@@ -35,6 +39,7 @@ impl AppState {
             sessions: RwLock::new(HashMap::new()),
             active_session_id: RwLock::new(None),
             config: RwLock::new(config),
+            pipeline: Mutex::new(None),
         }
     }
 

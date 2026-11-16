@@ -300,7 +300,7 @@ impl ReferenceEvaluation {
         let metrics = if self.reference.is_empty() {
             tracing::warn!("No reference transcription set — returning zeroed metrics");
             AccuracyMetrics {
-                model_size,
+                model_size: model_size.clone(),
                 word_error_rate: 0.0,
                 character_error_rate: 0.0,
                 reference_words: 0,
@@ -309,7 +309,7 @@ impl ReferenceEvaluation {
                 segment_similarity: 0.0,
             }
         } else {
-            AccuracyMetrics::compare(model_size, &self.reference, results)
+            AccuracyMetrics::compare(model_size.clone(), &self.reference, results)
         };
 
         tracing::info!(

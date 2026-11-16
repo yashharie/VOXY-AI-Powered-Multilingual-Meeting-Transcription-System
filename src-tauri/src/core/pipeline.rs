@@ -11,12 +11,11 @@
 //! Until then, the stub implementations in each mod.rs are used.
 
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::audio_capture::{AudioCaptureHandle, AudioFrame};
+use crate::audio_capture::{AudioCaptureHandle, AudioCaptureManager, CaptureConfig, AudioChunk};
 use crate::audio_processing::AudioProcessor;
-use crate::core::error::{AppError, AppResult};
+use crate::core::error::{AppResult, AppError};
 use crate::core::session::Session;
 use crate::core::types::SessionConfig;
 use crate::speaker_analysis::{DiarizationEngine, VadEngine};
@@ -25,15 +24,16 @@ use crate::transcript_processing::TranscriptProcessor;
 use tauri::AppHandle;
 
 /// Maximum number of raw audio frames buffered between capture and processing.
+#[allow(dead_code)]
 const AUDIO_CHANNEL_CAPACITY: usize = 64;
 
 /// Holds all running pipeline handles for a session.
 /// Dropping this struct stops all pipeline tasks.
+#[derive(Debug)]
 pub struct Pipeline {
     _capture: AudioCaptureHandle,
     _worker: JoinHandle<()>,
 }
-
 impl Pipeline {
     /// Start the full audio → transcript pipeline for a session.
     ///
@@ -49,28 +49,41 @@ impl Pipeline {
             "Starting audio-to-transcript pipeline"
         );
 
-        // Channel connecting capture → processing worker.
-        let (tx, mut rx) = mpsc::channel::<AudioFrame>(AUDIO_CHANNEL_CAPACITY);
-
-        // Start audio capture.
-        // TODO: pass tx to the capture module so frames are sent to the channel.
-        // For now the stub capture does nothing with it.
-        let capture = AudioCaptureHandle::start(config.audio_source.clone()).await?;
+        // Start real WASAPI audio capture and get the audio chunk receiver.
+        let capture_config = CaptureConfig::default();
+        let (capture_handle, mut rx) = match AudioCaptureHandle::start_real(capture_config) {
+            Ok((handle, rx)) => (handle, rx),
+            Err(e) => {
+                tracing::warn!(error = %e, "WASAPI capture failed, pipeline cannot start");
+                return Err(AppError::Internal(format!("Audio capture failed: {e}")));
+            }
+        };
 
         // Build processing components.
         let processor = AudioProcessor::new();
         let vad = VadEngine::new();
         let diarizer = DiarizationEngine::new();
 
-        // Load Whisper model path from config if available.
-        // If no path is configured the stub engine is used.
-        let whisper_path = std::env::current_dir()
-            .unwrap_or_default()
-            .join("models")
-            .join("ggml-base.bin");
-        let whisper = Arc::new(WhisperEngine::new(&whisper_path).unwrap_or_else(|e| {
+        // Load Whisper model — look next to the executable first, then ./models/.
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+
+        let model_path = [
+            exe_dir.join("models").join("ggml-base.bin"),
+            std::path::PathBuf::from("models/ggml-base.bin"),
+            std::path::PathBuf::from("../models/ggml-base.bin"),
+        ]
+        .into_iter()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("models/ggml-base.bin"));
+
+        tracing::info!(path = ?model_path, "Loading Whisper model");
+
+        let whisper = Arc::new(WhisperEngine::new(&model_path).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Whisper model not found, using stub engine");
-            WhisperEngine
+            WhisperEngine::stub()
         }));
 
         let transcript_proc = TranscriptProcessor::new();
@@ -80,9 +93,23 @@ impl Pipeline {
         let worker = tokio::spawn(async move {
             tracing::debug!(session_id = %session.id(), "Pipeline worker started");
 
-            while let Some(frame) = rx.recv().await {
+            while let Some(chunk) = rx.recv().await {
+                // Convert AudioChunk to AudioFrame for the preprocessor.
+                let frame = crate::audio_processing::AudioFrame::new(
+                    chunk.sample_rate_hz,
+                    1,
+                    chunk.samples,
+                    None,
+                    None,
+                    false,
+                );
+
                 // 1. Preprocess raw PCM.
-                let processed = match processor.process(frame) {
+                let processed = match processor.process(crate::audio_capture::AudioFrame {
+                    samples: frame.samples.clone(),
+                    channels: frame.channels,
+                    sample_rate: frame.sample_rate,
+                }) {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(error = %e, "Audio preprocessing failed, skipping frame");
@@ -127,7 +154,7 @@ impl Pipeline {
         });
 
         Ok(Pipeline {
-            _capture: capture,
+            _capture: capture_handle,
             _worker: worker,
         })
     }

@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-// whisper-rs language utilities (get_lang_str, get_lang_id, get_lang_str_full).
-use whisper_rs;
+// whisper-rs language utilities — removed, using CLI approach instead
+// use whisper_rs;
 
 // ─── Language support ─────────────────────────────────────────────────────────
 
@@ -229,25 +229,17 @@ pub fn validate_language_for_model(
 }
 
 /// Map a Whisper language ID (integer) to a [`WhisperLanguage`].
-///
-/// Uses whisper-rs `get_lang_str` to convert the ID to a code string,
-/// then maps it to the VOXY enum.  Unknown languages fall back to
-/// [`WhisperLanguage::English`].
-pub fn lang_id_to_enum(lang_id: i32) -> WhisperLanguage {
-    let code = whisper_rs::get_lang_str(lang_id).unwrap_or("en");
-    WhisperLanguage::from_hint(code)
+pub fn lang_id_to_enum(_lang_id: i32) -> WhisperLanguage {
+    WhisperLanguage::Auto
 }
 
 /// Get the full language name from a language code string.
-///
-/// Returns the ISO 639-1 code if the full name is not available.
 pub fn lang_full_name(code: &str) -> String {
-    let id = whisper_rs::get_lang_id(code);
-    if id >= 0 {
-        whisper_rs::get_lang_str_full(id)
-            .unwrap_or(code.to_string())
-    } else {
-        code.to_string()
+    match code {
+        "si" => "Sinhala".to_string(),
+        "ta" => "Tamil".to_string(),
+        "en" => "English".to_string(),
+        _ => code.to_string(),
     }
 }
 
