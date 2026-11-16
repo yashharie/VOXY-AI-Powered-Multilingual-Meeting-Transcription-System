@@ -17,7 +17,6 @@ import {
   clearSession,
   audioDevices,
   targetLanguage,
-  spokenLanguage,
 } from './sessionStore';
 import {
   initSession,
@@ -313,155 +312,26 @@ function _startSpeechRecognition(): void {
     (window as any).webkitSpeechRecognition;
   if (!SpeechRec) {
     console.warn('SpeechRecognition API not available in this WebView');
-    errorMessage.set('Speech recognition engine is not supported or not enabled on this Windows system.');
+    errorMessage.set('Speech recognition is not supported on this system. Enable it in Windows Settings > Time & Language > Speech.');
     return;
   }
 
-  // Ensure microphone permission is granted before starting recognition.
-  // In Tauri/WebView2, getUserMedia must succeed first otherwise SpeechRecognition
-  // will silently fail with a "not-allowed" error.
   (async () => {
+    // Request microphone permission first — WebView2 requires this before SpeechRecognition works.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-      stream.getTracks().forEach((t) => t.stop()); // permission granted — stop probe stream
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream.getTracks().forEach((t) => t.stop());
     } catch (permErr) {
-      console.warn('Microphone permission denied — transcription will not work:', permErr);
-      errorMessage.set('Microphone permission denied. Please allow microphone access and restart.');
+      console.warn('Microphone permission denied:', permErr);
+      errorMessage.set('Microphone permission denied. Allow microphone access in Windows Settings > Privacy > Microphone.');
       sessionStatus.set('idle');
       return;
     }
 
-    const spoken = get(spokenLanguage);
-    const target = get(targetLanguage);
-
-    // Auto-detect spoken language:
-    // If spoken === 'auto', activate true tri-lingual parallel recognition (en, ta, si)
-    // regardless of the targetLanguage setting so all 3 languages are always captured.
-    if (spoken === 'auto') {
-      _startMultilingualRecognition(SpeechRec);
-      return;
-    }
-
-    // Single-locale mode.
-    try {
-      const recognition = new SpeechRec();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 3;
-      recognition.lang = _pickRecognitionLocale(spoken, target);
-
-      recognition.onresult = async (event: any) => {
-        if (get(sessionStatus) !== 'active') return;
-
-        let interimText = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const item = event.results[i];
-          // Select best candidate alternative
-          let rawText = item[0]?.transcript?.trim();
-          if (item.length > 1) {
-            for (let a = 0; a < item.length; a++) {
-              const alt = item[a]?.transcript?.trim();
-              if (alt) {
-                const detected = detectLanguage(alt);
-                if (detected === 'ta' || detected === 'si') {
-                  rawText = alt;
-                  break;
-                }
-              }
-            }
-          }
-          if (!rawText) continue;
-
-          if (item.isFinal) {
-            const tgt = get(targetLanguage);
-            const { text, language, detectedLang } = await translateSegment(rawText, tgt);
-            const startTime = get(sessionStartTime) ?? Date.now();
-            const elapsedSec = (Date.now() - startTime) / 1000;
-
-            // Build a speaker label that indicates translation direction.
-            let speakerLabel = 'Speaker';
-            if (detectedLang !== 'und' && tgt !== 'auto' && detectedLang !== tgt) {
-              speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${tgt.toUpperCase()})`;
-            }
-
-            if (_interimId) {
-              upsertSegment({
-                id: _interimId,
-                text,
-                start_time: Math.max(0, elapsedSec - 2.5),
-                end_time: elapsedSec,
-                speaker: speakerLabel,
-                // Use the detected SOURCE language for the segment tag, not the
-                // translated target language, so the font and label are correct.
-                language: detectedLang !== 'und' ? detectedLang : language,
-              });
-              _interimId = null;
-            } else {
-              appendSegment({
-                id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                text,
-                start_time: Math.max(0, elapsedSec - 2.5),
-                end_time: elapsedSec,
-                speaker: speakerLabel,
-                language: detectedLang !== 'und' ? detectedLang : language,
-              });
-            }
-          } else {
-            interimText += rawText + ' ';
-          }
-        }
-
-        // Real-time interim display — instant word streaming.
-        // Detect language from the interim text so the correct font renders.
-        if (interimText.trim()) {
-          if (!_interimId) _interimId = `interim-${Date.now()}`;
-          const startTime = get(sessionStartTime) ?? Date.now();
-          const elapsedSec = (Date.now() - startTime) / 1000;
-          const interimLang = detectLanguage(interimText.trim());
-          upsertSegment({
-            id: _interimId,
-            text: interimText.trim() + ' …',
-            start_time: Math.max(0, elapsedSec - 1),
-            end_time: elapsedSec,
-            speaker: 'Live Speaker',
-            language: interimLang !== 'und' ? interimLang : 'en',
-          });
-        }
-      };
-
-      recognition.onerror = (e: any) => {
-        console.warn('Speech recognition error:', e?.error || e);
-        if (e?.error === 'not-allowed') {
-          errorMessage.set('Microphone permission blocked. Please check Windows Settings > Privacy > Microphone.');
-        } else if (e?.error === 'network') {
-          errorMessage.set('Speech recognition network error. Ensure internet connection is active for speech processing.');
-        } else if (e?.error === 'language-not-supported') {
-          errorMessage.set(`Selected language is not supported by your Windows speech packs. Please install the language pack in Windows Settings.`);
-        }
-      };
-
-      recognition.onend = () => {
-        if (get(sessionStatus) === 'active') {
-          try { recognition.start(); } catch { /* ignore restart errors */ }
-        }
-      };
-
-      recognition.start();
-      _speechRecognition = recognition;
-    } catch (err) {
-      console.warn('SpeechRecognition could not start:', err);
-    }
+    // Always run all 3 languages in parallel — English, Tamil, Sinhala.
+    _startMultilingualRecognition(SpeechRec);
   })();
 }
-
 function _stopSpeechRecognition(): void {
   if (_speechRecognition) {
     // In multilingual (fully-auto) mode _speechRecognition is an array of
@@ -525,89 +395,61 @@ export async function handleStart(_deviceId: string): Promise<void> {
   sessionStatus.set('starting');
 
   try {
-    // Determine audio source based on selected device name
-    const devs = get(audioDevices);
-    const chosen = devs.find((d) => d.id === _deviceId);
-    let audioSource: 'Loopback' | 'Microphone' | 'Both' = 'Both';
-    if (chosen?.name.toLowerCase().includes('mic')) {
-      audioSource = 'Microphone';
-    } else if (chosen?.name.toLowerCase().includes('speaker') || chosen?.name.toLowerCase().includes('loopback')) {
-      audioSource = 'Loopback';
+    // Try to create and start a backend session — if this fails (e.g. backend
+    // not fully integrated yet), fall through gracefully to speech-only mode.
+    try {
+      const devs = get(audioDevices);
+      const chosen = devs.find((d) => d.id === _deviceId);
+      let audioSource: 'Loopback' | 'Microphone' | 'Both' = 'Both';
+      if (chosen?.name.toLowerCase().includes('mic')) {
+        audioSource = 'Microphone';
+      } else if (chosen?.name.toLowerCase().includes('speaker') || chosen?.name.toLowerCase().includes('loopback')) {
+        audioSource = 'Loopback';
+      }
+
+      const sessionInfo = await initSession({
+        audio_source: audioSource,
+        language_hint: 'auto',
+        enable_diarization: false,
+        show_partial_results: true,
+      });
+      _sessionId = sessionInfo.session_id;
+      await startSession(_sessionId);
+    } catch (backendErr) {
+      // Backend not ready — continue in speech-recognition-only mode
+      console.warn('Backend session init failed, continuing in speech-only mode:', backendErr);
+      _sessionId = null;
     }
 
-    // Step 1: Create the session on the backend
-    const sessionInfo = await initSession({
-      audio_source: audioSource,
-      language_hint: get(spokenLanguage) || 'auto',
-      enable_diarization: false,
-      show_partial_results: true,
-    });
-
-    _sessionId = sessionInfo.session_id;
-
-    // Step 2: Start the session
-    await startSession(_sessionId);
-
-    // Bind media capture stream to chosen device
+    // Bind media stream to chosen device
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
       try {
         const constraints: MediaStreamConstraints = {
           audio: _deviceId && _deviceId !== 'default'
-            ? {
-                deviceId: { exact: _deviceId },
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              }
-            : {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
+            ? { deviceId: { exact: _deviceId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         };
         _mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (e) {
-        console.warn('Could not bind chosen audio device stream directly:', e);
+        console.warn('Could not bind audio device stream:', e);
       }
     }
 
     clearSession();
     resetMockSegments();
 
-    _unlistenTranscript = await onTranscriptSegment(async (segment) => {
-      const target = get(targetLanguage);
-      if (target && target !== 'auto') {
-        const { text, language, detectedLang } = await translateSegment(segment.text, target);
-        let speakerLabel = segment.speaker || 'Speaker';
-        if (detectedLang !== 'und' && detectedLang !== target) {
-          speakerLabel = `${speakerLabel} (${detectedLang.toUpperCase()} → ${target.toUpperCase()})`;
-        }
-        appendSegment({
-          ...segment,
-          text,
-          language,
-          speaker: speakerLabel,
-        });
-      } else {
+    if (_sessionId) {
+      _unlistenTranscript = await onTranscriptSegment(async (segment) => {
         appendSegment(segment);
-      }
-    });
+      });
+    }
 
     sessionStatus.set('active');
     sessionStartTime.set(Date.now());
 
-    // Start live speech transcription
+    // Always start multilingual speech recognition (en + ta + si in parallel)
     _startSpeechRecognition();
 
-    // Only run mock feed if explicitly requested via URL parameter (?mock=true) for browser UI testing
-    const isExplicitMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
-    if (!isTauri() && isExplicitMock) {
-      _mockTimer = setInterval(() => {
-        if (get(sessionStatus) === 'active') {
-          appendSegment(nextMockSegment());
-        }
-      }, 2500);
-    }
   } catch (err) {
     errorMessage.set(String(err));
     sessionStatus.set('idle');
