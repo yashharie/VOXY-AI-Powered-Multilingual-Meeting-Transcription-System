@@ -96,7 +96,10 @@ pub async fn start_session(
         }
 
         // Start real native audio-to-transcript pipeline
-        let session_config = session.config();
+        // Enable diarization always — pipeline falls back gracefully if no model is present.
+        let mut session_config = session.config();
+        session_config.enable_diarization = true;
+
         match super::pipeline::Pipeline::start(&session_config, session.clone(), app.clone()).await {
             Ok(pipeline) => {
                 state.store_pipeline(pipeline);

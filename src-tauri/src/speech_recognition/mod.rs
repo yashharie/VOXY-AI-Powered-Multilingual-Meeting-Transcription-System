@@ -235,11 +235,18 @@ impl WhisperEngine {
         cmd.arg("-m").arg(&self.model_path)
             .arg("-f").arg(&temp_wav)
             .arg("-l").arg(lang)
-            .arg("-oj")
-            .arg("-of").arg(&json_prefix)
-            .arg("-nt").arg("false")
-            .arg("-tr").arg("false") // Preserve original spoken language — never translate
-            .arg("--print-special").arg("false");
+            .arg("-oj")                   // output JSON
+            .arg("-of").arg(&json_prefix) // output file prefix
+            // Do NOT pass --no-timestamps — we need them for segment alignment
+            // Do NOT pass -tr (translate) — preserve original spoken language
+            .arg("--print-special").arg("false")
+            .arg("--print-progress").arg("false")
+            .arg("--print-realtime").arg("false");
+        // Thread count — use physical cores up to 4 to stay within 8 GB RAM budget
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(4))
+            .unwrap_or(2);
+        cmd.arg("-t").arg(threads.to_string());
 
         let output = match cmd.output() {
             Ok(out) => out,

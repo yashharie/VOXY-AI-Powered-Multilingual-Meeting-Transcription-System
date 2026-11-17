@@ -97,7 +97,7 @@ export async function handleStart(deviceId: string): Promise<void> {
       const sessionInfo = await initSession({
         audio_source: 'Both',          // loopback + microphone
         language_hint: 'auto',         // Whisper auto-detects Tamil/Sinhala/English
-        enable_diarization: false,
+        enable_diarization: true,      // always attempt speaker diarization
         show_partial_results: true,
         loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
       });
