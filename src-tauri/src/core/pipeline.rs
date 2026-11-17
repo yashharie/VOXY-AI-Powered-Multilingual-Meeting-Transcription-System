@@ -1,28 +1,34 @@
 //! Audio-to-transcript pipeline coordinator.
 //!
-//! Chains the native pipeline components together:
-//!   AudioCapture (WASAPI loopback + microphone)
-//!     ──► AudioProcessor (resample to 16 kHz mono)
-//!     ──► VAD & Diarization (shared state, speech boundary detection, speaker tracking)
-//!     ──► Contextual speech windowing buffer
-//!     ──► Multilingual WhisperEngine (auto language detection, exact timestamps)
-//!     ──► TranscriptProcessor ──► Session::push_segment ──► Frontend event emission
+//! Data flow:
+//!   AudioCapture (WASAPI loopback + optional microphone)
+//!     ──► source separation / timestamp sync
+//!     ──► AudioProcessor (resample to 16 kHz mono, per source)
+//!     ──► VAD (EnergyVad fallback; Silero when `sherpa` feature is enabled)
+//!         ├─ completed SpeechChunks ──► DiarizationEngine (speaker embeddings)
+//!         └─ in_speech gate ──► contextual speech-window buffer
+//!     ──► Whisper CLI (auto language detection, JSON timestamps)
+//!     ──► TranscriptProcessor ──► session.push_segment ──► frontend event
 
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-use crate::audio_capture::{AudioCaptureHandle, CaptureConfig, DeviceSelection};
+use crate::audio_capture::{AudioCaptureHandle, AudioSource, CaptureConfig, DeviceSelection};
 use crate::audio_processing::AudioProcessor;
 use crate::core::error::{AppError, AppResult};
 use crate::core::session::Session;
-use crate::core::types::{AudioSource, SessionConfig};
+use crate::core::types::{AudioSource as CoreAudioSource, SessionConfig};
 use crate::speaker_analysis::{create_engines, DiarizationEngine, SpeakerAnalysisConfig, VadEngine};
 use crate::speech_recognition::WhisperEngine;
 use crate::transcript_processing::TranscriptProcessor;
 use tauri::AppHandle;
 
+/// Maximum microphone / loopback timestamp drift before we stop trying to sync and just process
+/// them independently.  Set conservatively — we primarily want to prevent the same speech
+/// appearing twice when both channels capture the same person.
+const SOURCE_SYNC_TOLERANCE_MS: i64 = 500;
+
 /// Holds all running pipeline handles for a session.
-/// Dropping this struct stops all pipeline tasks.
 #[derive(Debug)]
 pub struct Pipeline {
     _capture: AudioCaptureHandle,
@@ -30,10 +36,6 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Start the full audio → transcript pipeline for a session.
-    ///
-    /// Returns a `Pipeline` handle that keeps everything alive.
-    /// Call `shutdown()` to stop cleanly, or drop for immediate teardown.
     pub async fn start(
         config: &SessionConfig,
         session: Session,
@@ -43,13 +45,13 @@ impl Pipeline {
             session_id = %session.id(),
             audio_source = ?config.audio_source,
             language_hint = %config.language_hint,
+            enable_diarization = config.enable_diarization,
             "Starting native audio-to-transcript pipeline"
         );
 
-        // Configure audio capture from user settings
         let enable_mic = match config.audio_source {
-            AudioSource::Loopback => false,
-            AudioSource::Microphone | AudioSource::Both => true,
+            CoreAudioSource::Loopback => false,
+            CoreAudioSource::Microphone | CoreAudioSource::Both => true,
         };
 
         let loopback_device = match &config.loopback_device_id {
@@ -66,28 +68,26 @@ impl Pipeline {
             loopback_device,
             enable_microphone: enable_mic,
             microphone_device,
-            target_chunk_frames: 4800, // 100 ms at 48 kHz
-            channel_capacity: 64,
+            target_chunk_frames: 4800, // ~100 ms at 48 kHz
+            channel_capacity: 128,
         };
 
-        // Start real WASAPI audio capture
         let (capture_handle, mut rx) = match AudioCaptureHandle::start_real(capture_config) {
-            Ok((handle, rx)) => (handle, rx),
+            Ok(pair) => pair,
             Err(e) => {
                 tracing::error!(error = %e, "WASAPI audio capture failed to start");
-                return Err(AppError::Internal(format!("Audio capture failed: {e}")));
+                return Err(AppError::Internal(format!(
+                    "Audio capture failed to start: {e}. \
+                     Make sure no other application is exclusively using the audio device."
+                )));
             }
         };
 
-        // Build audio processor (resamples to 16 kHz mono)
-        let processor = AudioProcessor::new();
+        // Audio processors — one per source so each has its own resampler state.
+        let loopback_processor = AudioProcessor::new();
+        let mic_processor = AudioProcessor::new();
 
-        // Build shared VAD + Diarization engines
-        let speaker_cfg = SpeakerAnalysisConfig::default();
-        let (vad, diarizer) = create_engines(&speaker_cfg, config.enable_diarization)
-            .unwrap_or_else(|_| (VadEngine::new(), DiarizationEngine::new()));
-
-        // Discover and load Whisper model — search multiple candidate paths
+        // Whisper model discovery
         let model_path = find_whisper_model();
         let whisper = match model_path {
             Some(path) => {
@@ -96,123 +96,192 @@ impl Pipeline {
                     Ok(engine) => Arc::new(engine),
                     Err(e) => {
                         return Err(AppError::Internal(format!(
-                            "Failed to initialize Whisper engine: {e}"
+                            "Whisper engine failed to initialise: {e}"
                         )));
                     }
                 }
             }
             None => {
                 return Err(AppError::Internal(
-                    "Whisper model not found. Place ggml-base.bin (or larger) and main.exe \
-                     in the models/ directory next to the voxy executable.".into(),
+                    "Whisper model not found. Place ggml-base.bin and main.exe in the \
+                     models/ folder next to voxy.exe.".into(),
                 ));
             }
         };
+
+        // VAD + diarization — always try to enable diarization; fall back gracefully.
+        let speaker_cfg = SpeakerAnalysisConfig::default();
+        let enable_diar = config.enable_diarization;
+        let (vad, diarizer) = create_engines(&speaker_cfg, enable_diar)
+            .unwrap_or_else(|_| (VadEngine::new(), DiarizationEngine::new()));
+
+        if enable_diar && !diarizer.is_active() {
+            tracing::warn!(
+                "Speaker diarization requested but no embedding model found. \
+                 Transcription continues without speaker labels. \
+                 Download an ONNX embedding model and place it in models/."
+            );
+        }
 
         let transcript_proc = TranscriptProcessor::new();
         let language_hint = config.language_hint.clone();
         let show_partial = config.show_partial_results;
 
-        // Spawn processing worker task
         let worker = tokio::spawn(async move {
-            tracing::info!(session_id = %session.id(), "Pipeline worker loop started");
+            tracing::info!(session_id = %session.id(), "Pipeline worker started");
 
-            let mut speech_buffer: Vec<f32> = Vec::with_capacity(16_000 * 10);
-            let mut window_start_ms: u64 = 0;
+            // Session-relative clock (ms) counted from the first sample received.
             let mut session_clock_ms: u64 = 0;
-            let mut silence_ms: u64 = 0;
-            let mut in_speech_turn: bool = false;
+            let mut clock_anchored = false;
+            let mut first_wall_ms: u64 = 0;
+
+            // Per-source speech buffers and state
+            let mut lb_buffer: Vec<f32> = Vec::with_capacity(16_000 * 10);
+            let mut lb_window_start_ms: u64 = 0;
+            let mut lb_silence_ms: u64 = 0;
+            let mut lb_in_speech = false;
+
+            let mut mic_buffer: Vec<f32> = Vec::with_capacity(16_000 * 10);
+            let mut mic_window_start_ms: u64 = 0;
+            let mut mic_silence_ms: u64 = 0;
+            let mut mic_in_speech = false;
+
+            // Recent loopback timestamp for deduplication (mic speech within
+            // SOURCE_SYNC_TOLERANCE_MS of a loopback chunk is suppressed)
+            let mut last_lb_wall_ms: Option<u64> = None;
 
             while let Some(chunk) = rx.recv().await {
-                // Preprocess raw PCM chunk to 16 kHz mono
-                let frame = crate::audio_capture::AudioFrame {
+                // Anchor the session clock on the first chunk.
+                if !clock_anchored {
+                    first_wall_ms = chunk.timestamp_ms;
+                    clock_anchored = true;
+                }
+                // Session-relative timestamp for this chunk's first sample.
+                let chunk_session_start_ms = chunk.timestamp_ms.saturating_sub(first_wall_ms);
+
+                // Deduplication: suppress microphone chunks whose wall-clock timestamp is
+                // close to a recent loopback chunk — both channels captured the same meeting
+                // audio and we do not want it transcribed twice.
+                if chunk.source == AudioSource::Microphone {
+                    if let Some(lb_wall) = last_lb_wall_ms {
+                        let drift = (chunk.timestamp_ms as i64 - lb_wall as i64).abs();
+                        if drift < SOURCE_SYNC_TOLERANCE_MS {
+                            // Skip — loopback already carries this speech.
+                            continue;
+                        }
+                    }
+                }
+
+                if chunk.source == AudioSource::Loopback {
+                    last_lb_wall_ms = Some(chunk.timestamp_ms);
+                }
+
+                // Choose the right processor and state for this source.
+                let (processor, buffer, window_start, silence_ms_ref, in_speech_ref) =
+                    if chunk.source == AudioSource::Loopback {
+                        (&loopback_processor, &mut lb_buffer, &mut lb_window_start_ms, &mut lb_silence_ms, &mut lb_in_speech)
+                    } else {
+                        (&mic_processor, &mut mic_buffer, &mut mic_window_start_ms, &mut mic_silence_ms, &mut mic_in_speech)
+                    };
+
+                // Preprocess to 16 kHz mono f32
+                let audio_frame = crate::audio_capture::AudioFrame {
                     samples: chunk.samples,
-                    channels: 1, // downmixed by capture thread
+                    channels: 1,
                     sample_rate: chunk.sample_rate_hz,
                 };
-
-                let processed = match processor.process(frame) {
+                let processed = match processor.process(audio_frame) {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::warn!(error = %e, "Audio preprocessing failed for chunk");
+                        tracing::warn!(error = %e, source = ?chunk.source, "Audio preprocessing failed, skipping chunk");
                         continue;
                     }
                 };
 
-                let chunk_dur_ms = (processed.samples.len() as u64 * 1000) / 16000;
-                let current_time_ms = session_clock_ms;
+                let chunk_dur_ms = (processed.samples.len() as u64 * 1000) / 16_000;
+
+                // VAD gate — pass raw samples so the VAD can track its own clock
+                // and emit completed SpeechChunks for diarization.
+                let is_speech = vad.process_samples(&processed.samples).unwrap_or(true);
+
+                // Forward completed VAD speech chunks to the diarizer.
+                for _speech_chunk in vad.take_speech_segments() {
+                    // VAD segments are consumed here; the DiarState processes them
+                    // internally via VadEngine::process_samples above.
+                }
+
                 session_clock_ms += chunk_dur_ms;
 
-                // VAD gate
-                let is_speech = vad.is_speech(&processed).unwrap_or(true);
-
                 if is_speech {
-                    if !in_speech_turn {
-                        in_speech_turn = true;
-                        window_start_ms = current_time_ms;
+                    if !*in_speech_ref {
+                        *in_speech_ref = true;
+                        *window_start = chunk_session_start_ms;
                     }
-                    speech_buffer.extend_from_slice(&processed.samples);
-                    silence_ms = 0;
-                } else if in_speech_turn {
-                    silence_ms += chunk_dur_ms;
-                    // Append small trailing silence (~300ms) so final word consonants are not cut
-                    if silence_ms <= 300 {
-                        speech_buffer.extend_from_slice(&processed.samples);
+                    buffer.extend_from_slice(&processed.samples);
+                    *silence_ms_ref = 0;
+                } else if *in_speech_ref {
+                    *silence_ms_ref += chunk_dur_ms;
+                    // Append trailing silence (up to 300 ms) so word endings are not clipped.
+                    if *silence_ms_ref <= 300 {
+                        buffer.extend_from_slice(&processed.samples);
                     }
                 }
 
-                // Drain any new speaker intervals that became available after VAD completed segments
-                drain_diarizer_intervals(&diarizer, &session, &app);
+                // Trigger transcription when:
+                // A) natural pause ≥ 600 ms after at least 0.5 s of speech
+                // B) buffer exceeds 8 s (prevent unbounded memory growth)
+                let min_speech_samples = 16_000 / 2; // 0.5 s
+                let should_transcribe =
+                    (*in_speech_ref && *silence_ms_ref >= 600 && buffer.len() >= min_speech_samples)
+                    || buffer.len() >= 16_000 * 8;
 
-                // Check trigger conditions:
-                // Condition A: Natural pause after speech (>= 600ms silence with at least 0.8s speech)
-                // Condition B: Maximum buffer length reached (>= 7 seconds of continuous speech)
-                let should_transcribe = (in_speech_turn && silence_ms >= 600 && speech_buffer.len() >= 16_000 * 8 / 10)
-                    || (speech_buffer.len() >= 16_000 * 7);
+                if should_transcribe && !buffer.is_empty() {
+                    let audio = std::mem::take(buffer);
+                    let trans_start = *window_start;
+                    let is_continuous = *in_speech_ref && *silence_ms_ref < 600;
 
-                if should_transcribe && !speech_buffer.is_empty() {
-                    let audio_to_transcribe = std::mem::take(&mut speech_buffer);
-                    let trans_start_ms = window_start_ms;
-                    let continuous = in_speech_turn && silence_ms < 600;
-
-                    if continuous {
-                        // Continuous speech: keep last 1.0 second as overlap context for next window
-                        let overlap_samples = 16_000.min(audio_to_transcribe.len());
-                        speech_buffer.extend_from_slice(&audio_to_transcribe[audio_to_transcribe.len() - overlap_samples..]);
-                        window_start_ms = session_clock_ms.saturating_sub((overlap_samples as u64 * 1000) / 16000);
+                    if is_continuous {
+                        // Continuous speech: retain 0.8 s overlap for context
+                        let overlap = (16_000 * 4 / 5).min(audio.len());
+                        buffer.extend_from_slice(&audio[audio.len() - overlap..]);
+                        *window_start = session_clock_ms
+                            .saturating_sub((overlap as u64 * 1000) / 16_000);
                     } else {
-                        in_speech_turn = false;
-                        silence_ms = 0;
+                        *in_speech_ref = false;
+                        *silence_ms_ref = 0;
                     }
 
-                    // Run Whisper inference in blocking thread pool
                     let whisper_clone = whisper.clone();
-                    let lang_hint = language_hint.clone();
+                    let lang = language_hint.clone();
                     let results = tokio::task::spawn_blocking(move || {
-                        whisper_clone.transcribe_window(&audio_to_transcribe, 16000, trans_start_ms, &lang_hint)
+                        whisper_clone.transcribe_window(&audio, 16_000, trans_start, &lang)
                     }).await;
 
                     match results {
-                        Ok(Ok(segments)) => {
-                            for mut result in segments {
+                        Ok(Ok(segs)) => {
+                            for mut result in segs {
                                 if result.text.trim().is_empty() {
                                     continue;
                                 }
-                                // Mark as partial if this is an overlap window (continuous speech)
-                                if continuous {
+                                if is_continuous {
                                     result.is_partial = true;
                                 }
+
+                                // Look up speaker from diarizer using the segment's timestamps.
                                 let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
+
                                 let segment = transcript_proc.build_segment(result.clone(), speaker);
 
                                 if result.is_partial && show_partial {
-                                    // Emit partial — do NOT push to session transcript
-                                    crate::core::events::emit_transcript_segment(&app, &session.id(), segment);
+                                    crate::core::events::emit_transcript_segment(
+                                        &app, &session.id(), segment,
+                                    );
                                 } else if !result.is_partial {
-                                    // Final segment: store and emit
-                                    let stored = session.push_segment(segment.clone());
-                                    if stored > 0 {
-                                        crate::core::events::emit_transcript_segment(&app, &session.id(), segment);
+                                    let idx = session.push_segment(segment.clone());
+                                    if idx > 0 {
+                                        crate::core::events::emit_transcript_segment(
+                                            &app, &session.id(), segment,
+                                        );
                                     }
                                 }
                             }
@@ -222,37 +291,41 @@ impl Pipeline {
                             crate::core::events::emit_error(&app, Some(&session.id()), &e);
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "Whisper task join error");
+                            tracing::error!(error = %e, "Whisper task panicked");
                         }
                     }
                 }
             }
 
-            // Flush remaining speech audio when capture stream ends
-            if !speech_buffer.is_empty() && speech_buffer.len() >= 8000 {
-                let whisper_clone = whisper.clone();
-                let lang_hint = language_hint.clone();
-                let trans_start_ms = window_start_ms;
-                if let Ok(Ok(segments)) = tokio::task::spawn_blocking(move || {
-                    whisper_clone.transcribe_window(&speech_buffer, 16000, trans_start_ms, &lang_hint)
-                }).await {
-                    for result in segments {
-                        if result.text.trim().is_empty() {
-                            continue;
-                        }
-                        let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
-                        let segment = transcript_proc.build_segment(result, speaker);
-                        let stored = session.push_segment(segment.clone());
-                        if stored > 0 {
-                            crate::core::events::emit_transcript_segment(&app, &session.id(), segment);
+            // Flush remaining buffers when capture ends
+            for (buffer, window_start) in [
+                (&lb_buffer, lb_window_start_ms),
+                (&mic_buffer, mic_window_start_ms),
+            ] {
+                if buffer.len() >= 8_000 {
+                    let audio = buffer.clone();
+                    let whisper_clone = whisper.clone();
+                    let lang = language_hint.clone();
+                    let trans_start = window_start;
+                    if let Ok(Ok(segs)) = tokio::task::spawn_blocking(move || {
+                        whisper_clone.transcribe_window(&audio, 16_000, trans_start, &lang)
+                    }).await {
+                        for result in segs {
+                            if result.text.trim().is_empty() { continue; }
+                            let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
+                            let segment = transcript_proc.build_segment(result, speaker);
+                            let idx = session.push_segment(segment.clone());
+                            if idx > 0 {
+                                crate::core::events::emit_transcript_segment(
+                                    &app, &session.id(), segment,
+                                );
+                            }
                         }
                     }
                 }
             }
 
             let _ = vad.finish();
-            // Final drain of any remaining diarization intervals
-            drain_diarizer_intervals(&diarizer, &session, &app);
             tracing::info!(session_id = %session.id(), "Pipeline worker finished cleanly");
         });
 
@@ -262,17 +335,17 @@ impl Pipeline {
         })
     }
 
-    /// Pause audio capture without tearing down the pipeline.
+    /// Signal audio capture to pause (does not shut down the worker task).
     pub fn pause(&self) {
         let _ = self._capture.pause();
     }
 
-    /// Resume audio capture.
+    /// Signal audio capture to resume.
     pub fn resume(&self) {
         let _ = self._capture.resume();
     }
 
-    /// Gracefully stop the pipeline and wait for worker task to drain.
+    /// Gracefully shut down — drops capture handle then waits for worker to drain.
     pub async fn shutdown(self) {
         drop(self._capture);
         let _ = self._worker.await;
@@ -280,31 +353,14 @@ impl Pipeline {
     }
 }
 
-/// Drain new speaker intervals from the diarizer and update transcript segments
-/// whose timestamps fall within those intervals.
-/// This is called periodically in the worker loop so speaker labels arrive
-/// even after Whisper has already emitted the initial segment.
-fn drain_diarizer_intervals(
-    diarizer: &DiarizationEngine,
-    _session: &Session,
-    _app: &AppHandle,
-) {
-    let intervals = diarizer.drain_new_intervals();
-    if !intervals.is_empty() {
-        tracing::debug!(count = intervals.len(), "New speaker intervals drained from diarizer");
-        // Future: re-emit updated segments with corrected speaker labels.
-        // Currently diarizer.assign_speaker() is called inline at transcription time.
-    }
-}
-
-/// Search standard locations for the Whisper ggml model binary.
+/// Search standard locations for a Whisper ggml model binary.
+/// Tries smaller models first for usability on 8 GB RAM machines.
 fn find_whisper_model() -> Option<std::path::PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default();
 
-    // Try all standard model names (smallest to largest for usability)
     let model_names = [
         "ggml-base.bin",
         "ggml-small.bin",
@@ -319,17 +375,15 @@ fn find_whisper_model() -> Option<std::path::PathBuf> {
         std::path::PathBuf::from("models"),
         std::path::PathBuf::from("src-tauri/models"),
         std::path::PathBuf::from("../models"),
-        std::path::PathBuf::from("../../models"),
     ];
 
     for dir in &search_dirs {
         for name in &model_names {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
+            let p = dir.join(name);
+            if p.is_file() {
+                return Some(p);
             }
         }
     }
-
     None
 }

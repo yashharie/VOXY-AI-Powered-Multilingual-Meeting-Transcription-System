@@ -70,9 +70,23 @@ impl AppState {
 
     /// Creates and stores a new session. Returns an error if one is already active.
     pub fn create_session(&self, config: SessionConfig) -> AppResult<Session> {
-        // Guard: only one active session at a time.
-        if let Some(id) = self.active_session_id.read().as_deref() {
-            return Err(AppError::SessionAlreadyActive(id.to_string()));
+        // If the previous session is stopped/error, clear it so a new one can start.
+        if let Some(id) = self.active_session_id.read().clone() {
+            if let Some(session) = self.sessions.read().get(&id).cloned() {
+                use super::types::SessionState;
+                match session.state() {
+                    SessionState::Stopped | SessionState::Error => {
+                        // Clear the stale session slot so the new session can be created.
+                        self.sessions.write().remove(&id);
+                        *self.active_session_id.write() = None;
+                    }
+                    _ => {
+                        return Err(AppError::SessionAlreadyActive(id.to_string()));
+                    }
+                }
+            } else {
+                *self.active_session_id.write() = None;
+            }
         }
 
         let session = Session::new(config);
