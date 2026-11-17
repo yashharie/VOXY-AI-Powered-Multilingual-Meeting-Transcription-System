@@ -1,18 +1,21 @@
 //! Speech recognition module — owned by Member 5.
 //!
-//! Uses whisper.cpp CLI binary for transcription to avoid Windows build
-//! issues with whisper-rs-sys bindgen on MSVC + LLVM 23.
-//! When the CLI binary is not found, the engine returns empty results (stub mode).
+//! Uses whisper.cpp CLI binary (main.exe / whisper-cli.exe) for local transcription.
+//! Performs overlapping contextual audio buffering, automatic language detection (Tamil,
+//! Sinhala, English), exact timestamp extraction, and strictly preserves original spoken text
+//! without translation or transliteration.
 
 pub mod config;
 pub mod evaluation;
 
 use crate::audio_processing::ProcessedAudio;
 use crate::core::error::{AppError, AppResult};
+use serde::Deserialize;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
-/// A recognized text span with timing metadata.
-#[derive(Debug, Clone)]
+/// A recognized text span with timing and language metadata.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecognitionResult {
     pub text: String,
     pub language: String,
@@ -21,33 +24,62 @@ pub struct RecognitionResult {
     pub is_partial: bool,
 }
 
+#[derive(Deserialize)]
+struct WhisperJsonOutput {
+    result: Option<WhisperResultMeta>,
+    transcription: Option<Vec<WhisperJsonSegment>>,
+}
+
+#[derive(Deserialize)]
+struct WhisperResultMeta {
+    language: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WhisperJsonSegment {
+    offsets: Option<WhisperOffsets>,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct WhisperOffsets {
+    from: u64,
+    to: u64,
+}
+
 /// Handle to the Whisper inference engine.
 pub struct WhisperEngine {
-    model_path: std::path::PathBuf,
+    model_path: PathBuf,
     is_loaded: bool,
-    /// Path to whisper.cpp CLI binary (whisper-cli.exe or main.exe)
-    cli_path: Option<std::path::PathBuf>,
+    /// Path to whisper.cpp CLI binary (main.exe or whisper-cli.exe)
+    cli_path: Option<PathBuf>,
 }
 
 impl WhisperEngine {
-    /// Load a whisper.cpp model from the given path.
-    pub fn new(model_path: &std::path::Path) -> AppResult<Self> {
-        let exists = model_path.is_file();
-        if !exists {
-            tracing::warn!(path = ?model_path, "Whisper model not found — stub mode");
+    /// Load a whisper.cpp model from the given path (or discover it in standard directories).
+    pub fn new(requested_path: &Path) -> AppResult<Self> {
+        let model_path = Self::find_model(requested_path)
+            .ok_or_else(|| AppError::Internal(format!(
+                "Whisper model file not found. Looked for '{}' and standard models directories.",
+                requested_path.display()
+            )))?;
+
+        let cli_path = Self::find_cli(&model_path);
+        if cli_path.is_none() {
+            return Err(AppError::Internal(
+                "Whisper CLI executable (main.exe / whisper-cli.exe) not found.".into(),
+            ));
         }
 
-        // Look for whisper CLI binary next to the model or in PATH
-        let cli_path = Self::find_cli(model_path);
-        if let Some(ref p) = cli_path {
-            tracing::info!(cli = ?p, "Found whisper.cpp CLI");
-        } else {
-            tracing::warn!("whisper.cpp CLI not found — will use stub transcription");
-        }
+        tracing::info!(
+            model = ?model_path,
+            cli = ?cli_path,
+            "Whisper engine initialised successfully"
+        );
 
         Ok(Self {
-            model_path: model_path.to_path_buf(),
-            is_loaded: exists,
+            model_path,
+            is_loaded: true,
             cli_path,
         })
     }
@@ -55,7 +87,7 @@ impl WhisperEngine {
     /// Create a stub engine with no model loaded.
     pub fn stub() -> Self {
         Self {
-            model_path: std::path::PathBuf::new(),
+            model_path: PathBuf::new(),
             is_loaded: false,
             cli_path: None,
         }
@@ -65,77 +97,328 @@ impl WhisperEngine {
         self.is_loaded
     }
 
-    fn find_cli(model_path: &std::path::Path) -> Option<std::path::PathBuf> {
-        let model_dir = model_path.parent()?;
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
+    }
+
+    pub fn cli_path(&self) -> Option<&Path> {
+        self.cli_path.as_deref()
+    }
+
+    /// Search standard directories for the Whisper model.
+    pub fn find_model(hint: &Path) -> Option<PathBuf> {
+        if hint.is_file() {
+            return Some(hint.to_path_buf());
+        }
+
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+
         let candidates = [
-            model_dir.join("whisper-cli.exe"),
-            model_dir.join("main.exe"),
-            model_dir.parent()?.join("whisper-cli.exe"),
-            model_dir.parent()?.join("main.exe"),
-            std::path::PathBuf::from("whisper-cli.exe"),
-            std::path::PathBuf::from("main.exe"),
+            hint.to_path_buf(),
+            exe_dir.join("models").join("ggml-base.bin"),
+            exe_dir.join("ggml-base.bin"),
+            PathBuf::from("models/ggml-base.bin"),
+            PathBuf::from("src-tauri/models/ggml-base.bin"),
+            PathBuf::from("../models/ggml-base.bin"),
+            PathBuf::from("../../models/ggml-base.bin"),
         ];
+
         candidates.into_iter().find(|p| p.is_file())
     }
 
-    /// Transcribe processed audio into recognition results.
-    pub fn transcribe(
+    /// Search for the whisper.cpp CLI binary.
+    pub fn find_cli(model_path: &Path) -> Option<PathBuf> {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+
+        let model_dir = model_path.parent();
+
+        let mut candidates = Vec::new();
+        if let Some(md) = model_dir {
+            candidates.push(md.join("main.exe"));
+            candidates.push(md.join("whisper-cli.exe"));
+            candidates.push(md.join("whisper.exe"));
+            if let Some(parent) = md.parent() {
+                candidates.push(parent.join("main.exe"));
+                candidates.push(parent.join("models").join("main.exe"));
+                candidates.push(parent.join("src-tauri").join("models").join("main.exe"));
+            }
+        }
+
+        candidates.push(exe_dir.join("models").join("main.exe"));
+        candidates.push(exe_dir.join("main.exe"));
+        candidates.push(exe_dir.join("models").join("whisper-cli.exe"));
+        candidates.push(exe_dir.join("whisper-cli.exe"));
+        candidates.push(PathBuf::from("models/main.exe"));
+        candidates.push(PathBuf::from("src-tauri/models/main.exe"));
+        candidates.push(PathBuf::from("../models/main.exe"));
+        candidates.push(PathBuf::from("main.exe"));
+        candidates.push(PathBuf::from("whisper-cli.exe"));
+
+        for p in candidates {
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+
+        // Try checking PATH
+        if let Ok(output) = std::process::Command::new("where").arg("main.exe").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = PathBuf::from(first_line.trim());
+                    if path.is_file() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Transcribe a window of 16kHz mono audio samples with accurate timestamps.
+    pub fn transcribe_window(
         &self,
-        audio: &ProcessedAudio,
+        samples: &[f32],
+        sample_rate: u32,
+        window_start_ms: u64,
         language_hint: &str,
     ) -> AppResult<Vec<RecognitionResult>> {
         if !self.is_loaded {
-            return Ok(Vec::new());
+            return Err(AppError::Internal(format!(
+                "Whisper model is not loaded (expected at {})",
+                self.model_path.display()
+            )));
         }
 
         let cli = match &self.cli_path {
             Some(p) => p,
             None => {
-                tracing::debug!("No whisper CLI — returning empty results");
-                return Ok(Vec::new());
+                return Err(AppError::Internal(
+                    "Whisper CLI executable (main.exe) not found".into(),
+                ));
             }
         };
 
-        // Write PCM samples to a temp WAV file
-        let temp_wav = std::env::temp_dir().join(format!(
-            "voxy_chunk_{}.wav",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
+        // If audio is too short (less than 200ms), skip to avoid whisper errors
+        let min_samples = (sample_rate as usize) / 5;
+        if samples.len() < min_samples {
+            return Ok(Vec::new());
+        }
 
-        write_wav(&temp_wav, &audio.samples, audio.sample_rate)
-            .map_err(|e| AppError::Internal(format!("WAV write failed: {e}")))?;
+        let timestamp_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
 
-        // Run whisper CLI
-        let lang = if language_hint.is_empty() || language_hint == "auto" { "auto" } else { language_hint };
+        let temp_dir = std::env::temp_dir();
+        let temp_wav = temp_dir.join(format!("voxy_chunk_{}_{}.wav", std::process::id(), timestamp_suffix));
+        let json_prefix = temp_dir.join(format!("voxy_out_{}_{}", std::process::id(), timestamp_suffix));
+        let json_file = json_prefix.with_extension("json");
 
-        let output = std::process::Command::new(cli)
-            .arg("--model").arg(&self.model_path)
-            .arg("--file").arg(&temp_wav)
-            .arg("--language").arg(lang)
-            .arg("--output-txt")
-            .arg("--no-timestamps")
-            .arg("--print-special").arg("false")
-            .output()
-            .map_err(|e| AppError::Internal(format!("whisper CLI failed: {e}")))?;
+        write_wav(&temp_wav, samples, sample_rate)
+            .map_err(|e| AppError::Internal(format!("Failed to write temporary WAV: {e}")))?;
+
+        let lang = if language_hint.is_empty() || language_hint == "auto" {
+            "auto"
+        } else {
+            language_hint
+        };
+
+        let mut cmd = std::process::Command::new(cli);
+        cmd.arg("-m").arg(&self.model_path)
+            .arg("-f").arg(&temp_wav)
+            .arg("-l").arg(lang)
+            .arg("-oj")
+            .arg("-of").arg(&json_prefix)
+            .arg("-nt").arg("false")
+            .arg("-tr").arg("false") // Preserve original spoken language — never translate
+            .arg("--print-special").arg("false");
+
+        let output = match cmd.output() {
+            Ok(out) => out,
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_wav);
+                let _ = std::fs::remove_file(&json_file);
+                return Err(AppError::Internal(format!("Whisper process execution failed: {e}")));
+            }
+        };
 
         let _ = std::fs::remove_file(&temp_wav);
 
         if !output.status.success() {
+            let _ = std::fs::remove_file(&json_file);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(stderr = %stderr, "whisper CLI exited with error");
-            return Ok(Vec::new());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(AppError::Internal(format!(
+                "Whisper CLI exited with error code {:?}: stderr={}, stdout={}",
+                output.status.code(),
+                stderr.trim(),
+                stdout.trim()
+            )));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let results = parse_whisper_output(&stdout, lang);
+
+        // Attempt reading structured JSON output first
+        let mut results = Vec::new();
+        if json_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&json_file) {
+                if let Ok(parsed) = serde_json::from_str::<WhisperJsonOutput>(&content) {
+                    let detected_lang = parsed
+                        .result
+                        .and_then(|r| r.language)
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or_else(|| {
+                            parse_auto_detected_language(&stdout).unwrap_or_else(|| lang.to_string())
+                        });
+
+                    if let Some(segments) = parsed.transcription {
+                        for seg in segments {
+                            let text = clean_whisper_text(&seg.text);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let (from_ms, to_ms) = match seg.offsets {
+                                Some(offsets) => (offsets.from, offsets.to),
+                                None => (0, (samples.len() as u64 * 1000) / sample_rate as u64),
+                            };
+
+                            results.push(RecognitionResult {
+                                text,
+                                language: detected_lang.clone(),
+                                start_ms: window_start_ms + from_ms,
+                                end_ms: window_start_ms + to_ms,
+                                is_partial: false,
+                            });
+                        }
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&json_file);
+        }
+
+        // Fallback to parsing stdout if JSON had no results
+        if results.is_empty() {
+            let detected_lang = parse_auto_detected_language(&stdout)
+                .unwrap_or_else(|| lang.to_string());
+            results = parse_whisper_stdout(&stdout, &detected_lang, window_start_ms);
+        }
+
         Ok(results)
+    }
+
+    /// Transcribe a processed audio frame (delegates to transcribe_window).
+    pub fn transcribe(
+        &self,
+        audio: &ProcessedAudio,
+        language_hint: &str,
+    ) -> AppResult<Vec<RecognitionResult>> {
+        self.transcribe_window(&audio.samples, audio.sample_rate, 0, language_hint)
     }
 }
 
-fn write_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
+/// Filter out hallucinated tokens and special audio artifacts.
+fn clean_whisper_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Ignore noise annotations like [BLANK_AUDIO], (crickets chirping), (applause), etc.
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+        || (trimmed.starts_with('*') && trimmed.ends_with('*'))
+    {
+        let lower = trimmed.to_lowercase();
+        if lower.contains("blank")
+            || lower.contains("applause")
+            || lower.contains("chirp")
+            || lower.contains("music")
+            || lower.contains("laughter")
+            || lower.contains("sigh")
+            || lower.contains("cough")
+            || lower.contains("throat")
+        {
+            return String::new();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+/// Parse auto-detected language code from Whisper stdout.
+fn parse_auto_detected_language(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if line.contains("auto-detected language:") {
+            if let Some(part) = line.split("auto-detected language:").nth(1) {
+                let code = part.split_whitespace().next().unwrap_or("").trim();
+                if !code.is_empty() {
+                    return Some(code.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse stdout timestamp lines like "[00:00:01.000 --> 00:00:04.500]   text".
+fn parse_whisper_stdout(stdout: &str, lang: &str, window_start_ms: u64) -> Vec<RecognitionResult> {
+    let mut results = Vec::new();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.contains("-->") {
+            if let Some(close_bracket) = trimmed.find(']') {
+                let time_part = &trimmed[1..close_bracket];
+                let text_part = clean_whisper_text(&trimmed[close_bracket + 1..]);
+                if text_part.is_empty() {
+                    continue;
+                }
+
+                let mut times = time_part.split("-->");
+                let start_str = times.next().unwrap_or("").trim();
+                let end_str = times.next().unwrap_or("").trim();
+
+                let seg_start = parse_timestamp_ms(start_str);
+                let seg_end = parse_timestamp_ms(end_str);
+
+                results.push(RecognitionResult {
+                    text: text_part,
+                    language: lang.to_string(),
+                    start_ms: window_start_ms + seg_start,
+                    end_ms: window_start_ms + seg_end,
+                    is_partial: false,
+                });
+            }
+        }
+    }
+
+    results
+}
+
+/// Convert "00:01:23.450" or "00:01:23,450" into milliseconds.
+fn parse_timestamp_ms(ts: &str) -> u64 {
+    let clean = ts.replace(',', ".");
+    let parts: Vec<&str> = clean.split(':').collect();
+    if parts.len() == 3 {
+        let hours: u64 = parts[0].parse().unwrap_or(0);
+        let mins: u64 = parts[1].parse().unwrap_or(0);
+        let secs_f: f64 = parts[2].parse().unwrap_or(0.0);
+        let total_secs = (hours * 3600 + mins * 60) as f64 + secs_f;
+        (total_secs * 1000.0) as u64
+    } else {
+        0
+    }
+}
+
+fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     let num_samples = samples.len() as u32;
     let byte_rate = sample_rate * 2; // 16-bit mono
@@ -165,22 +448,67 @@ fn write_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> std::
     Ok(())
 }
 
-fn parse_whisper_output(stdout: &str, lang: &str) -> Vec<RecognitionResult> {
-    let mut results = Vec::new();
-    for line in stdout.lines() {
-        let text = line.trim().to_string();
-        if text.is_empty() || text.starts_with('[') { continue; }
-        results.push(RecognitionResult {
-            text,
-            language: lang.to_string(),
-            start_ms: 0,
-            end_ms: 0,
-            is_partial: false,
-        });
-    }
-    results
-}
-
-// SAFETY: WhisperEngine only holds paths and is safe to share.
+// SAFETY: WhisperEngine only holds paths and is safe to share across threads.
 unsafe impl Send for WhisperEngine {}
 unsafe impl Sync for WhisperEngine {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_whisper_text_preserves_multilingual() {
+        assert_eq!(clean_whisper_text("  வணக்கம்  "), "வணக்கம்");
+        assert_eq!(clean_whisper_text("  ආයුබෝවන්  "), "ආයුබෝවන්");
+        assert_eq!(clean_whisper_text("Good morning, how are you?"), "Good morning, how are you?");
+    }
+
+    #[test]
+    fn test_clean_whisper_text_filters_noise() {
+        assert_eq!(clean_whisper_text("[BLANK_AUDIO]"), "");
+        assert_eq!(clean_whisper_text("(applause)"), "");
+        assert_eq!(clean_whisper_text("(crickets chirping)"), "");
+        assert_eq!(clean_whisper_text("(music)"), "");
+    }
+
+    #[test]
+    fn test_parse_timestamp_ms() {
+        assert_eq!(parse_timestamp_ms("00:00:01.500"), 1500);
+        assert_eq!(parse_timestamp_ms("00:01:02,300"), 62300);
+        assert_eq!(parse_timestamp_ms("01:00:00.000"), 3600000);
+    }
+
+    #[test]
+    fn test_parse_auto_detected_language() {
+        let stdout = "whisper_full_with_state: auto-detected language: ta (p = 0.85)\n";
+        assert_eq!(parse_auto_detected_language(stdout), Some("ta".to_string()));
+
+        let stdout_si = "main: processing...\nwhisper_full_with_state: auto-detected language: si (p = 0.92)\n";
+        assert_eq!(parse_auto_detected_language(stdout_si), Some("si".to_string()));
+
+        let stdout_en = "auto-detected language: en\n";
+        assert_eq!(parse_auto_detected_language(stdout_en), Some("en".to_string()));
+    }
+
+    #[test]
+    fn test_parse_whisper_stdout_multilingual() {
+        let stdout = r#"
+[00:00:00.000 --> 00:00:02.500]   வணக்கம்
+[00:00:02.500 --> 00:00:05.000]   Welcome to the meeting
+[00:00:05.000 --> 00:00:08.000]   ආයුබෝවන්
+"#;
+        let results = parse_whisper_stdout(stdout, "auto", 1000);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].text, "வணக்கம்");
+        assert_eq!(results[0].start_ms, 1000);
+        assert_eq!(results[0].end_ms, 3500);
+
+        assert_eq!(results[1].text, "Welcome to the meeting");
+        assert_eq!(results[1].start_ms, 3500);
+        assert_eq!(results[1].end_ms, 6000);
+
+        assert_eq!(results[2].text, "ආයුබෝවන්");
+        assert_eq!(results[2].start_ms, 6000);
+        assert_eq!(results[2].end_ms, 9000);
+    }
+}

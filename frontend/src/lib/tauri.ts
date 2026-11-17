@@ -68,6 +68,8 @@ export interface SessionConfig {
   language_hint: string;
   enable_diarization: boolean;
   show_partial_results: boolean;
+  microphone_device_id?: string;
+  loopback_device_id?: string;
 }
 
 export async function initSession(config: SessionConfig): Promise<SessionInfo> {
@@ -188,19 +190,38 @@ export async function onTranscriptSegment(
   callback: (segment: TranscriptSegment) => void,
 ): Promise<() => void> {
   if (isTauri()) {
-    const unlisten = await listen<Record<string, unknown>>('voxy://transcript-segment', (event) => {
+    const unlisten = await listen<any>('voxy://transcript-segment', (event) => {
       const payload = event.payload;
+      const seg = payload?.segment ?? payload;
+      if (!seg) return;
       const normalized: TranscriptSegment = {
-        id: (payload.id as string) || `seg-${payload.index ?? Date.now()}`,
-        text: (payload.text as string) ?? '',
-        start_time: (payload.start_time as number) ?? 0,
-        end_time: (payload.end_time as number) ?? 0,
-        speaker: (payload.speaker as string) || 'Speaker',
-        language: (payload.language as 'si' | 'ta' | 'en' | 'und') || 'und',
+        id: seg.id || `seg-${seg.index ?? Date.now()}`,
+        text: (seg.text as string) ?? '',
+        start_time: typeof seg.start_time === 'number' ? seg.start_time : 0,
+        end_time: typeof seg.end_time === 'number' ? seg.end_time : 0,
+        // speaker is Option<String> from Rust — may be null
+        speaker: (seg.speaker as string) || null,
+        language: (seg.language as 'si' | 'ta' | 'en' | 'und') || 'und',
+        is_partial: Boolean(seg.is_partial),
       };
       callback(normalized);
     });
     return unlisten;
+  }
+  return () => {};
+}
+
+export async function onSessionError(
+  callback: (err: { code: string; message: string }) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    return await listen<any>('voxy://error', (event) => {
+      const p = event.payload;
+      // Backend emits ErrorEventPayload: { session_id?, code, message, recoverable }
+      const code: string = p?.code ?? 'ERROR';
+      const message: string = p?.message ?? String(p);
+      callback({ code, message });
+    });
   }
   return () => {};
 }

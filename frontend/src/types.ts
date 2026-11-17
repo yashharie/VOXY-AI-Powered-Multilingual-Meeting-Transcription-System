@@ -4,8 +4,10 @@ export interface TranscriptSegment {
   text: string;
   start_time: number;
   end_time: number;
-  speaker: string;
+  /** Speaker label from diarization, or null/undefined if diarization is off */
+  speaker: string | null;
   language: 'si' | 'ta' | 'en' | 'und';
+  is_partial?: boolean;
 }
 
 // Session lifecycle states

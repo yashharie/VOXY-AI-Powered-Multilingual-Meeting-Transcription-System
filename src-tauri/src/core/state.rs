@@ -43,6 +43,24 @@ impl AppState {
         }
     }
 
+    // ── Pipeline management ──────────────────────────────────────────────────
+
+    /// Store the active session's running pipeline.
+    pub fn store_pipeline(&self, pipeline: Pipeline) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            *guard = Some(pipeline);
+        }
+    }
+
+    /// Take and remove the active pipeline (for shutdown or teardown).
+    pub fn take_pipeline(&self) -> Option<Pipeline> {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.take()
+        } else {
+            None
+        }
+    }
+
     // ── Session management ────────────────────────────────────────────────────
 
     /// Returns the ID of the currently active/paused session, if any.

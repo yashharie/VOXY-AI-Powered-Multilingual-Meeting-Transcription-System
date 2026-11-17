@@ -62,7 +62,9 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 tracing::info!("Main window destroyed — triggering cleanup");
                 let state = window.state::<core::state::AppState>();
-                // Best-effort cleanup on window close.
+                // Drop the pipeline immediately (stops capture threads without async await).
+                let _ = state.take_pipeline();
+                // Best-effort synchronous session cleanup on window close.
                 if let Some(id) = state.active_session_id() {
                     if let Err(e) = state.stop_session(&id) {
                         tracing::warn!(error = %e, "Cleanup stop_session failed on exit");

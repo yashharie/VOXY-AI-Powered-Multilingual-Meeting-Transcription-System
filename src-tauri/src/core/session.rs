@@ -163,11 +163,16 @@ impl Session {
     // ── Transcript management ─────────────────────────────────────────────────
 
     /// Append a finalized segment to the session transcript.
+    /// Only non-partial segments are stored; partial segments are emitted as
+    /// events but not persisted in the transcript history.
     pub fn push_segment(&self, mut segment: TranscriptSegment) -> u32 {
+        if segment.is_partial {
+            // Partial (interim) segments are only emitted as events — not stored.
+            return 0;
+        }
         let mut inner = self.0.write();
         inner.segment_counter += 1;
         segment.index = inner.segment_counter;
-        segment.is_partial = false;
         inner.transcript.push(segment);
         inner.segment_counter
     }

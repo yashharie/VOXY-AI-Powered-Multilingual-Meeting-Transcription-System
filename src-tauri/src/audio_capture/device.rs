@@ -46,6 +46,18 @@ pub struct AudioDevice {
 pub struct DeviceEnumerator;
 
 impl DeviceEnumerator {
+    /// Initializes COM safely on the current thread, ignoring RPC_E_CHANGED_MODE
+    /// if COM was already initialized (e.g. by Tauri or WebView2 in STA mode).
+    pub fn init_com_safe() -> Result<(), CaptureError> {
+        if let Err(e) = wasapi::initialize_mta() {
+            let code = e.code().0 as u32;
+            if code != 0x80010106 && code != 0x00000001 && !e.to_string().contains("80010106") {
+                return Err(CaptureError::Wasapi(format!("COM init failed: {e}")));
+            }
+        }
+        Ok(())
+    }
+
     /// Return all active output (playback) endpoints.
     pub fn list_output_devices() -> Result<Vec<AudioDevice>, CaptureError> {
         Self::enumerate(Direction::Render)
@@ -58,9 +70,7 @@ impl DeviceEnumerator {
 
     /// Return the default output endpoint, or an error if none exists.
     pub fn default_output_device() -> Result<AudioDevice, CaptureError> {
-        // Initialize COM before any WASAPI call.
-        wasapi::initialize_mta()
-            .map_err(|e| CaptureError::Wasapi(format!("COM init: {e}")))?;
+        Self::init_com_safe()?;
 
         let device = wasapi::get_default_device(&Direction::Render)
             .map_err(|e| CaptureError::Wasapi(format!("get_default_device(Render): {e}")))?;
@@ -83,8 +93,7 @@ impl DeviceEnumerator {
 
     /// Return the default input (microphone) endpoint, or an error if none.
     pub fn default_input_device() -> Result<AudioDevice, CaptureError> {
-        wasapi::initialize_mta()
-            .map_err(|e| CaptureError::Wasapi(format!("COM init: {e}")))?;
+        Self::init_com_safe()?;
 
         let device = wasapi::get_default_device(&Direction::Capture)
             .map_err(|e| CaptureError::Wasapi(format!("get_default_device(Capture): {e}")))?;
@@ -124,10 +133,8 @@ impl DeviceEnumerator {
     // ── internal ─────────────────────────────────────────────────────────────
 
     fn enumerate(direction: Direction) -> Result<Vec<AudioDevice>, CaptureError> {
-        // Initialise COM on this thread (MTA). The `wasapi` crate requires COM
-        // to be initialised before any WASAPI calls.
-        wasapi::initialize_mta()
-            .map_err(|e| CaptureError::Wasapi(format!("COM init failed: {e}")))?;
+        // Initialise COM on this thread (MTA) safely.
+        Self::init_com_safe()?;
 
         let collection = DeviceCollection::new(&direction).map_err(|e| {
             CaptureError::Wasapi(format!("DeviceCollection::new failed: {e}"))

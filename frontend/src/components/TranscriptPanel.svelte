@@ -100,7 +100,7 @@
 
       <div class="segment-meta">
         {#if $appSettings.showSpeakerLabels}
-          <span class="segment-speaker">{segment.speaker}</span>
+          <span class="segment-speaker">{segment.speaker ?? 'Unknown Speaker'}</span>
         {/if}
         <span class="segment-time">{formatTime(segment.start_time)} – {formatTime(segment.end_time)}</span>
         {#if $appSettings.showLanguageLabels}

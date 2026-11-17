@@ -29,7 +29,7 @@ export const filteredSegments = derived(
     return $segments.filter(
       (s) =>
         s.text.toLowerCase().includes(q) ||
-        s.speaker.toLowerCase().includes(q),
+        (s.speaker ?? '').toLowerCase().includes(q),
     );
   },
 );

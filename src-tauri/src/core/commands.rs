@@ -10,7 +10,7 @@
 
 use tauri::{AppHandle, State};
 
-use super::error::{AppError, AppResult, IpcResult};
+use super::error::{AppResult, IpcResult};
 use super::events;
 use super::state::AppState;
 use super::types::{AppVersion, SessionConfig, SessionInfo, TranscriptSegment};
@@ -69,15 +69,15 @@ pub fn init_session(
     result.into()
 }
 
-/// Start (or resume from Initializing) a session — begins audio capture.
+/// Start (or resume from Initializing) a session — begins native audio capture and transcription.
 #[tauri::command]
-pub fn start_session(
+pub async fn start_session(
     session_id: String,
     app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
+    state: State<'_, AppState>,
+) -> Result<IpcResult<SessionInfo>, String> {
     tracing::info!(%session_id, "IPC: start_session called");
-    let result: AppResult<SessionInfo> = (|| {
+    let result: AppResult<SessionInfo> = (async {
         let session = state.get_session(&session_id)?;
         let prev = session.state();
         let info = session.start()?;
@@ -90,20 +90,40 @@ pub fn start_session(
             None,
         );
 
-        // NOTE: The WASAPI/Whisper pipeline is intentionally NOT started here.
-        // Live transcription is handled entirely by the Web Speech API in the
-        // frontend (WebView2). Starting WASAPI here would crash on machines
-        // where the audio device is not available to the process.
-        // Pipeline can be re-enabled once WASAPI permissions are sorted.
+        // Shut down any stale running pipeline if present
+        if let Some(stale) = state.take_pipeline() {
+            stale.shutdown().await;
+        }
+
+        // Start real native audio-to-transcript pipeline
+        let session_config = session.config();
+        match super::pipeline::Pipeline::start(&session_config, session.clone(), app.clone()).await {
+            Ok(pipeline) => {
+                state.store_pipeline(pipeline);
+                tracing::info!(%session_id, "Native pipeline started and active");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to start native pipeline");
+                let _ = session.set_error();
+                events::emit_session_state_changed(
+                    &app,
+                    &session_id,
+                    info.state.clone(),
+                    super::types::SessionState::Error,
+                    Some(e.to_string()),
+                );
+                return Err(e);
+            }
+        }
 
         Ok(info)
-    })();
+    }).await;
 
     if let Err(ref e) = result {
         events::emit_error(&app, Some(&session_id), e);
     }
 
-    result.into()
+    Ok(result.into())
 }
 
 /// Pause an active session — halts audio capture.
@@ -127,7 +147,12 @@ pub fn pause_session(
             None,
         );
 
-        // TODO (Task 11): signal audio_capture to pause.
+        // Signal audio capture to pause
+        if let Ok(guard) = state.pipeline.lock() {
+            if let Some(ref pipeline) = *guard {
+                pipeline.pause();
+            }
+        }
 
         Ok(info)
     })();
@@ -160,7 +185,12 @@ pub fn resume_session(
             None,
         );
 
-        // TODO (Task 11): signal audio_capture to resume.
+        // Signal audio capture to resume
+        if let Ok(guard) = state.pipeline.lock() {
+            if let Some(ref pipeline) = *guard {
+                pipeline.resume();
+            }
+        }
 
         Ok(info)
     })();
@@ -174,13 +204,13 @@ pub fn resume_session(
 
 /// Stop a session: triggers cleanup and emits cleanup-done event.
 #[tauri::command]
-pub fn stop_session(
+pub async fn stop_session(
     session_id: String,
     app: AppHandle,
-    state: State<AppState>,
-) -> IpcResult<SessionInfo> {
+    state: State<'_, AppState>,
+) -> Result<IpcResult<SessionInfo>, String> {
     tracing::info!(%session_id, "IPC: stop_session called");
-    let result: AppResult<SessionInfo> = (|| {
+    let result: AppResult<SessionInfo> = (async {
         let session = state.get_session(&session_id)?;
         let prev = session.state();
 
@@ -194,12 +224,8 @@ pub fn stop_session(
         );
 
         // Shut down the pipeline before stopping the session.
-        if let Ok(mut guard) = state.pipeline.lock() {
-            if let Some(pipeline) = guard.take() {
-                tokio::spawn(async move {
-                    pipeline.shutdown().await;
-                });
-            }
+        if let Some(pipeline) = state.take_pipeline() {
+            pipeline.shutdown().await;
         }
 
         // Run the full stop + cleanup flow.
@@ -218,13 +244,13 @@ pub fn stop_session(
         events::emit_session_cleanup_done(&app, &session_id);
 
         Ok(info)
-    })();
+    }).await;
 
     if let Err(ref e) = result {
         events::emit_error(&app, Some(&session_id), e);
     }
 
-    result.into()
+    Ok(result.into())
 }
 
 /// Returns the current state snapshot of a session.

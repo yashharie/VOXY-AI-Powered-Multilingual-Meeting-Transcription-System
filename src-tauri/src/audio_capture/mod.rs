@@ -13,11 +13,11 @@ pub mod types;
 mod tests;
 
 pub use capture::{AudioCaptureManager, CaptureHandle};
-pub use config::CaptureConfig;
+pub use config::{CaptureConfig, DeviceSelection};
 pub use error::CaptureError;
 pub use types::{AudioChunk, AudioSource};
 
-use crate::core::error::{AppError, AppResult};
+use crate::core::error::AppResult;
 use crate::core::types::AudioSource as CoreAudioSource;
 
 /// A single captured audio frame passed to the pipeline.
@@ -49,8 +49,19 @@ impl AudioCaptureHandle {
         Ok(Self { inner: None })
     }
 
-    pub async fn pause(&self) -> AppResult<()> { Ok(()) }
-    pub async fn resume(&self) -> AppResult<()> { Ok(()) }
+    pub fn pause(&self) -> AppResult<()> {
+        if let Some(ref handle) = self.inner {
+            handle.pause();
+        }
+        Ok(())
+    }
+
+    pub fn resume(&self) -> AppResult<()> {
+        if let Some(ref handle) = self.inner {
+            handle.resume();
+        }
+        Ok(())
+    }
 
     pub async fn stop(self) -> AppResult<()> {
         if let Some(handle) = self.inner {

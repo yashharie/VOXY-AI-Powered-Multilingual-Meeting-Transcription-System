@@ -42,7 +42,7 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             loopback_device: DeviceSelection::Default,
-            enable_microphone: false,
+            enable_microphone: true,
             microphone_device: DeviceSelection::Default,
             // 100 ms of audio at 48 000 Hz.
             target_chunk_frames: 4800,

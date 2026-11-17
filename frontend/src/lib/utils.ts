@@ -35,10 +35,10 @@ export function languageClass(code: string): string {
  * Build a plain-text export string from transcript segments.
  */
 export function buildExportText(
-  segments: Array<{ start_time: number; speaker: string; text: string }>,
+  segments: Array<{ start_time: number; speaker: string | null; text: string }>,
 ): string {
   return segments
-    .map((s) => `[${formatTime(s.start_time)}] ${s.speaker}: ${s.text}`)
+    .map((s) => `[${formatTime(s.start_time)}] ${s.speaker ?? 'Speaker'}: ${s.text}`)
     .join('\n');
 }
 

@@ -46,6 +46,7 @@ type StopFlag = Arc<AtomicBool>;
 /// capture threads to exit cleanly and joins them.
 pub struct CaptureHandle {
     stop_flag: StopFlag,
+    pause_flag: Arc<AtomicBool>,
     loopback_thread: Option<thread::JoinHandle<()>>,
     mic_thread: Option<thread::JoinHandle<()>>,
 }
@@ -57,6 +58,16 @@ impl std::fmt::Debug for CaptureHandle {
 }
 
 impl CaptureHandle {
+    /// Signal the capture threads to pause audio forwarding.
+    pub fn pause(&self) {
+        self.pause_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Signal the capture threads to resume audio forwarding.
+    pub fn resume(&self) {
+        self.pause_flag.store(false, Ordering::Relaxed);
+    }
+
     /// Signal the capture threads to stop and wait for them to exit.
     pub fn stop(mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
@@ -118,67 +129,61 @@ impl AudioCaptureManager {
         let (tx, rx) = mpsc::channel::<AudioChunk>(config.channel_capacity);
 
         let stop_flag: StopFlag = Arc::new(AtomicBool::new(false));
+        let pause_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         // ── Loopback thread ──────────────────────────────────────────────────
         let loopback_device = match &config.loopback_device {
-            DeviceSelection::Default => DeviceEnumerator::default_output_device()?,
-            DeviceSelection::ById(id) => {
-                DeviceEnumerator::find_output_device_by_id(id)?
-            }
+            DeviceSelection::Default => DeviceEnumerator::default_output_device().ok(),
+            DeviceSelection::ById(id) => DeviceEnumerator::find_output_device_by_id(id).ok(),
         };
 
-        info!(device = %loopback_device.name, "Opening loopback capture on device");
+        let loopback_thread = if let Some(ref dev) = loopback_device {
+            info!(device = %dev.name, "Opening loopback capture on device");
 
-        let lb_tx = tx.clone();
-        let lb_stop = stop_flag.clone();
-        let lb_chunk_frames = config.target_chunk_frames;
-        let lb_device_id = loopback_device.id.clone();
-        let lb_device_name = loopback_device.name.clone();
+            let lb_tx = tx.clone();
+            let lb_stop = stop_flag.clone();
+            let lb_pause = pause_flag.clone();
+            let lb_chunk_frames = config.target_chunk_frames;
+            let lb_device_id = dev.id.clone();
+            let lb_device_name = dev.name.clone();
 
-        let loopback_thread = thread::Builder::new()
-            .name("voxy-loopback-capture".into())
-            .spawn(move || {
-                if let Err(e) = loopback_capture_loop(
-                    &lb_device_id,
-                    &lb_device_name,
-                    lb_chunk_frames,
-                    lb_tx,
-                    lb_stop,
-                ) {
-                    error!("Loopback capture error: {e}");
-                }
-            })
-            .map_err(|e| CaptureError::TaskError(e.to_string()))?;
+            let handle = thread::Builder::new()
+                .name("voxy-loopback-capture".into())
+                .spawn(move || {
+                    if let Err(e) = loopback_capture_loop(
+                        &lb_device_id,
+                        &lb_device_name,
+                        lb_chunk_frames,
+                        lb_tx,
+                        lb_stop,
+                        lb_pause,
+                    ) {
+                        error!("Loopback capture error: {e}");
+                    }
+                })
+                .map_err(|e| CaptureError::TaskError(e.to_string()))?;
+            Some(handle)
+        } else {
+            warn!("Output device not available for loopback; continuing without loopback.");
+            None
+        };
 
         // ── Optional microphone thread ───────────────────────────────────────
         let mic_thread = if config.enable_microphone {
             let mic_device = match &config.microphone_device {
-                DeviceSelection::Default => {
-                    DeviceEnumerator::default_input_device()
-                        .map_err(|e| {
-                            warn!("Microphone not available: {e}");
-                            e
-                        })
-                        .ok()
-                }
-                DeviceSelection::ById(id) => {
-                    DeviceEnumerator::find_input_device_by_id(id)
-                        .map_err(|e| {
-                            warn!("Requested microphone not found: {e}");
-                            e
-                        })
-                        .ok()
-                }
+                DeviceSelection::Default => DeviceEnumerator::default_input_device().ok(),
+                DeviceSelection::ById(id) => DeviceEnumerator::find_input_device_by_id(id).ok(),
             };
 
-            if let Some(device) = mic_device {
-                info!(device = %device.name, "Opening microphone capture on device");
+            if let Some(ref dev) = mic_device {
+                info!(device = %dev.name, "Opening microphone capture on device");
 
                 let mic_tx = tx.clone();
                 let mic_stop = stop_flag.clone();
+                let mic_pause = pause_flag.clone();
                 let mic_chunk_frames = config.target_chunk_frames;
-                let mic_device_id = device.id.clone();
-                let mic_device_name = device.name.clone();
+                let mic_device_id = dev.id.clone();
+                let mic_device_name = dev.name.clone();
 
                 let handle = thread::Builder::new()
                     .name("voxy-microphone-capture".into())
@@ -189,6 +194,7 @@ impl AudioCaptureManager {
                             mic_chunk_frames,
                             mic_tx,
                             mic_stop,
+                            mic_pause,
                         ) {
                             error!("Microphone capture error: {e}");
                         }
@@ -197,12 +203,18 @@ impl AudioCaptureManager {
 
                 Some(handle)
             } else {
-                warn!("Microphone capture requested but no device was available; continuing with loopback only.");
+                warn!("Microphone capture requested but no device was available; continuing without mic.");
                 None
             }
         } else {
             None
         };
+
+        if loopback_thread.is_none() && mic_thread.is_none() {
+            return Err(CaptureError::DeviceNotFound(
+                "No audio devices (neither output loopback nor microphone) could be opened.".into(),
+            ));
+        }
 
         // Drop our clone of `tx`; the threads now own the only senders.
         drop(tx);
@@ -210,7 +222,8 @@ impl AudioCaptureManager {
         Ok((
             CaptureHandle {
                 stop_flag,
-                loopback_thread: Some(loopback_thread),
+                pause_flag,
+                loopback_thread,
                 mic_thread,
             },
             rx,
@@ -232,9 +245,9 @@ fn loopback_capture_loop(
     target_chunk_frames: usize,
     tx: mpsc::Sender<AudioChunk>,
     stop_flag: StopFlag,
+    pause_flag: Arc<AtomicBool>,
 ) -> Result<(), CaptureError> {
-    wasapi::initialize_mta()
-        .map_err(|e| CaptureError::Wasapi(format!("COM init: {e}")))?;
+    DeviceEnumerator::init_com_safe()?;
 
     // Find the render endpoint by ID in the collection.
     let device = find_device_by_id_in_collection(device_id, &Direction::Render)?;
@@ -307,6 +320,11 @@ fn loopback_capture_loop(
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             break;
+        }
+
+        if pause_flag.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(50));
+            continue;
         }
 
         // Wait up to 200 ms for new audio data to arrive.
@@ -399,9 +417,9 @@ fn microphone_capture_loop(
     target_chunk_frames: usize,
     tx: mpsc::Sender<AudioChunk>,
     stop_flag: StopFlag,
+    pause_flag: Arc<AtomicBool>,
 ) -> Result<(), CaptureError> {
-    wasapi::initialize_mta()
-        .map_err(|e| CaptureError::Wasapi(format!("COM init (mic): {e}")))?;
+    DeviceEnumerator::init_com_safe()?;
 
     let device = find_device_by_id_in_collection(device_id, &Direction::Capture)?;
 
@@ -463,6 +481,11 @@ fn microphone_capture_loop(
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             break;
+        }
+
+        if pause_flag.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(50));
+            continue;
         }
 
         match event_handle.wait_for_event(200) {

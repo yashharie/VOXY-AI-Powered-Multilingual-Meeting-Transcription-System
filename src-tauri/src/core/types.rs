@@ -61,7 +61,7 @@ pub struct SessionInfo {
 }
 
 impl SessionInfo {
-    pub fn new(config: &SessionConfig) -> Self {
+    pub fn new(_config: &SessionConfig) -> Self {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
         let display_name = format!(
@@ -82,20 +82,42 @@ impl SessionInfo {
 /// User-supplied configuration for a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
+    #[serde(default = "default_audio_source")]
     pub audio_source: AudioSource,
     /// Language hint for Whisper, e.g. "si", "ta", "en", "auto".
+    #[serde(default = "default_language_hint")]
     pub language_hint: String,
+    #[serde(default)]
     pub enable_diarization: bool,
+    #[serde(default = "default_true")]
     pub show_partial_results: bool,
+    #[serde(default)]
+    pub microphone_device_id: Option<String>,
+    #[serde(default)]
+    pub loopback_device_id: Option<String>,
+}
+
+fn default_audio_source() -> AudioSource {
+    AudioSource::Both
+}
+
+fn default_language_hint() -> String {
+    "auto".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            audio_source: AudioSource::Loopback,
+            audio_source: AudioSource::Both,
             language_hint: "auto".to_string(),
             enable_diarization: false,
             show_partial_results: true,
+            microphone_device_id: None,
+            loopback_device_id: None,
         }
     }
 }
