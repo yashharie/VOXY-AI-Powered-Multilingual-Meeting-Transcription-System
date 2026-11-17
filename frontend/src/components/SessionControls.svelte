@@ -7,6 +7,7 @@
     meetingPlatform,
     sessionName,
     targetLanguage,
+    spokenLanguage,
   } from '../lib/sessionStore';
   import {
     handleStart,
@@ -17,10 +18,16 @@
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
   const TARGET_LANGUAGES = [
-    { code: 'auto', label: 'All languages (English + Tamil + Sinhala)' },
-    { code: 'en', label: 'English only' },
-    { code: 'ta', label: 'Tamil only (தமிழ்)' },
-    { code: 'si', label: 'Sinhala only (සිංහල)' },
+    { code: 'ta', label: 'Tamil (தமிழ்)' },
+    { code: 'en', label: 'English' },
+    { code: 'si', label: 'Sinhala (සිංහල)' },
+    { code: 'auto', label: 'Original (As Spoken)' },
+  ];
+  const SPOKEN_LANGUAGES = [
+    { code: 'auto', label: 'Auto-Detect (Multilingual)' },
+    { code: 'ta', label: 'Tamil (தமிழ்)' },
+    { code: 'en', label: 'English' },
+    { code: 'si', label: 'Sinhala (සිංහල)' },
   ];
 
   $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
@@ -80,13 +87,13 @@
   </div>
 
   <div class="field-row">
-    <label for="target-lang-select" class="field-label">Transcription language</label>
+    <label for="target-lang-select" class="field-label">Transcribe to (Output)</label>
     <select
       id="target-lang-select"
       class="field-select"
       bind:value={$targetLanguage}
       disabled={!isIdle}
-      aria-label="Select transcription language"
+      aria-label="Select output language for transcript"
     >
       {#each TARGET_LANGUAGES as lang}
         <option value={lang.code}>{lang.label}</option>
@@ -94,7 +101,20 @@
     </select>
   </div>
 
-  <p class="lang-note">Always listens for English, Tamil and Sinhala simultaneously.</p>
+  <div class="field-row">
+    <label for="spoken-lang-select" class="field-label">Spoken language (Input)</label>
+    <select
+      id="spoken-lang-select"
+      class="field-select"
+      bind:value={$spokenLanguage}
+      disabled={!isIdle}
+      aria-label="Select spoken language or auto-detect"
+    >
+      {#each SPOKEN_LANGUAGES as lang}
+        <option value={lang.code}>{lang.label}</option>
+      {/each}
+    </select>
+  </div>
 
   <div class="divider"></div>
   <div class="section-title">Controls</div>
@@ -217,12 +237,5 @@
     font-size: 0.8rem;
     color: var(--color-danger);
     margin: 0;
-  }
-
-  .lang-note {
-    font-size: 0.72rem;
-    color: var(--color-text-muted);
-    margin: 0;
-    font-style: italic;
   }
 </style>

@@ -59,43 +59,154 @@ export function detectLanguage(text: string): 'ta' | 'si' | 'en' | 'und' {
   return en > 0 ? 'en' : 'und';
 }
 
-// ── Translation ───────────────────────────────────────────────────────────────
+// ── Transliteration & Translation ─────────────────────────────────────────────
+
+export async function transliterate(text: string, lang: 'ta' | 'si'): Promise<string> {
+  if (!text || !text.trim()) return text;
+  try {
+    const itc = lang === 'ta' ? 'ta-t-i0-und' : 'si-t-i0-und';
+    const url = `https://inputtools.google.com/request?text=${encodeURIComponent(text)}&itc=${itc}&num=1`;
+    const res = await fetch(url);
+    if (!res.ok) return text;
+    const data = await res.json();
+    if (data[0] === 'SUCCESS' && data[1]?.[0]?.[1]?.[0]) {
+      return data[1][0][1][0];
+    }
+  } catch (e) {
+    console.warn('Transliteration fallback:', e);
+  }
+  return text;
+}
 
 export async function translateSegment(
   text: string,
   targetLang: string,
 ): Promise<{ text: string; language: 'ta' | 'si' | 'en' | 'und'; detectedLang: 'ta' | 'si' | 'en' | 'und' }> {
   const localDetected = detectLanguage(text);
-  if (!targetLang || targetLang === 'auto' || targetLang === localDetected) {
-    return { text, language: localDetected, detectedLang: localDetected };
-  }
 
-  try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Translation request failed');
-    const data = await res.json();
-    const translated =
-      data[0]?.map((chunk: any) => chunk[0]).filter(Boolean).join('')?.trim() || text;
-
-    let apiDetected = data[2] || localDetected;
-    if (typeof apiDetected === 'string') {
-      if (apiDetected.startsWith('ta')) apiDetected = 'ta';
-      else if (apiDetected.startsWith('si')) apiDetected = 'si';
-      else if (apiDetected.startsWith('en')) apiDetected = 'en';
-      else apiDetected = localDetected;
-    } else {
-      apiDetected = localDetected;
+  // ── Target: Tamil (தமிழ்) ──────────────────────────────────────────────────
+  if (targetLang === 'ta') {
+    // If text already has native Tamil script, keep it directly
+    if (localDetected === 'ta') {
+      return { text, language: 'ta', detectedLang: 'ta' };
     }
 
-    const resolvedDetected: 'ta' | 'si' | 'en' | 'und' =
-      (localDetected === 'ta' || localDetected === 'si') ? localDetected : (apiDetected as any);
+    // Try Google Translate first (handles English -> Tamil: "what happening" -> "என்ன நடக்கிறது")
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ta&dt=t&q=${encodeURIComponent(text)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const translated =
+          data[0]?.map((chunk: any) => chunk[0]).filter(Boolean).join('')?.trim() || text;
+        const apiDetected = data[2] || localDetected;
 
-    return { text: translated, language: resolvedDetected, detectedLang: resolvedDetected };
-  } catch (err) {
-    console.warn('Translation fallback to original:', err);
-    return { text, language: localDetected, detectedLang: localDetected };
+        // If translation successfully produced Tamil script, return it!
+        if (detectLanguage(translated) === 'ta') {
+          const srcLang: 'ta' | 'si' | 'en' | 'und' =
+            typeof apiDetected === 'string' && apiDetected.startsWith('en')
+              ? 'en'
+              : typeof apiDetected === 'string' && apiDetected.startsWith('si')
+                ? 'si'
+                : 'ta';
+          return { text: translated, language: 'ta', detectedLang: srcLang };
+        }
+      }
+    } catch (e) {
+      console.warn('Google Translate error:', e);
+    }
+
+    // If Google Translate did NOT produce Tamil script (e.g. romanized Tamil "enna nadakuthu"),
+    // Google Input Tools transliterates it directly to native Tamil script: "என்ன நடக்குது"!
+    const transliterated = await transliterate(text, 'ta');
+    return {
+      text: transliterated,
+      language: 'ta',
+      detectedLang: 'ta',
+    };
   }
+
+  // ── Target: Sinhala (සිංහල) ────────────────────────────────────────────────
+  if (targetLang === 'si') {
+    if (localDetected === 'si') {
+      return { text, language: 'si', detectedLang: 'si' };
+    }
+
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(text)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const translated =
+          data[0]?.map((chunk: any) => chunk[0]).filter(Boolean).join('')?.trim() || text;
+        const apiDetected = data[2] || localDetected;
+
+        if (detectLanguage(translated) === 'si') {
+          const srcLang: 'ta' | 'si' | 'en' | 'und' =
+            typeof apiDetected === 'string' && apiDetected.startsWith('en')
+              ? 'en'
+              : typeof apiDetected === 'string' && apiDetected.startsWith('ta')
+                ? 'ta'
+                : 'si';
+          return { text: translated, language: 'si', detectedLang: srcLang };
+        }
+      }
+    } catch (e) {
+      console.warn('Google Translate error:', e);
+    }
+
+    const transliterated = await transliterate(text, 'si');
+    return {
+      text: transliterated,
+      language: 'si',
+      detectedLang: 'si',
+    };
+  }
+
+  // ── Target: English ────────────────────────────────────────────────────────
+  if (targetLang === 'en') {
+    if (localDetected === 'en') {
+      const spoken = get(spokenLanguage);
+      if (spoken === 'ta') {
+        try {
+          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ta&tl=en&dt=t&q=${encodeURIComponent(text)}`;
+          const res = await fetch(url);
+          if (res.ok) {
+            const data = await res.json();
+            const translated = data[0]?.map((c: any) => c[0]).filter(Boolean).join('')?.trim();
+            if (translated && translated.toLowerCase() !== text.toLowerCase()) {
+              return { text: translated, language: 'en', detectedLang: 'ta' };
+            }
+          }
+        } catch {}
+      }
+      return { text, language: 'en', detectedLang: 'en' };
+    }
+
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(text)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const translated = data[0]?.map((c: any) => c[0]).filter(Boolean).join('')?.trim() || text;
+        return { text: translated, language: 'en', detectedLang: localDetected };
+      }
+    } catch {}
+    return { text, language: 'en', detectedLang: localDetected };
+  }
+
+  // ── Target: Original (As Spoken) ───────────────────────────────────────────
+  const spoken = get(spokenLanguage);
+  if (spoken === 'ta' && localDetected !== 'ta') {
+    const transliterated = await transliterate(text, 'ta');
+    return { text: transliterated, language: 'ta', detectedLang: 'ta' };
+  }
+  if (spoken === 'si' && localDetected !== 'si') {
+    const transliterated = await transliterate(text, 'si');
+    return { text: transliterated, language: 'si', detectedLang: 'si' };
+  }
+
+  return { text, language: localDetected, detectedLang: localDetected };
 }
 
 // ── Microphone permission ─────────────────────────────────────────────────────
@@ -245,6 +356,16 @@ function _startSpeechRecognition(): void {
         // 'no-speech' is normal (silence), 'aborted' happens on stop — ignore both
         if (err === 'no-speech' || err === 'aborted') return;
 
+        // If Windows does not have the Tamil/Sinhala speech pack installed,
+        // automatically fall back to en-US. Our transliteration pipeline converts
+        // the resulting phonetic speech into native script automatically!
+        if (err === 'language-not-supported' && recognition.lang !== 'en-US') {
+          console.warn(`Speech recognition locale '${recognition.lang}' not installed on this PC, switching to en-US with AI transliteration`);
+          recognition.lang = 'en-US';
+          try { recognition.start(); } catch {}
+          return;
+        }
+
         // Show actionable errors to the user
         if (err === 'not-allowed' || err === 'service-not-allowed') {
           errorMessage.set('Microphone access denied. Go to Windows Settings → Privacy → Microphone and allow VOXY.');
@@ -330,6 +451,22 @@ export async function initSessionController(): Promise<void> {
       } catch { /* ignore */ }
     });
   }
+
+  // Update recognition language dynamically if user changes it
+  spokenLanguage.subscribe((spoken) => {
+    if (_speechRecognition && get(sessionStatus) === 'active') {
+      try {
+        _speechRecognition.lang = _pickLocale(spoken, get(targetLanguage));
+      } catch {}
+    }
+  });
+  targetLanguage.subscribe((target) => {
+    if (_speechRecognition && get(sessionStatus) === 'active') {
+      try {
+        _speechRecognition.lang = _pickLocale(get(spokenLanguage), target);
+      } catch {}
+    }
+  });
 }
 
 // ── Session commands ──────────────────────────────────────────────────────────

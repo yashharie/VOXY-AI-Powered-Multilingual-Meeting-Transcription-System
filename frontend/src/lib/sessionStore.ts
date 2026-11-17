@@ -11,8 +11,8 @@ export const meetingPlatform = writable<string>('None');
 export const sessionName = writable<string>('');
 export const sessionStartTime = writable<number | null>(null);
 
-export type SupportedLanguage = 'en' | 'ta' | 'si' | 'auto';
-export const targetLanguage = writable<SupportedLanguage>('en');
+export type SupportedLanguage = 'en' | 'ta' | 'ta-IN' | 'ta-LK' | 'si' | 'auto';
+export const targetLanguage = writable<SupportedLanguage>('ta');
 export const spokenLanguage = writable<SupportedLanguage>('auto');
 
 // ── Transcript state ──────────────────────────────────────────────────────────
