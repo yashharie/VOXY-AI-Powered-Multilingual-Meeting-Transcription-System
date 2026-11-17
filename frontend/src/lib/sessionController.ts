@@ -1,13 +1,22 @@
 /**
- * Session controller — persistent application-level session lifecycle manager.
+ * VOXY Session Controller
  *
- * Lives at the App root level and is never destroyed by navigation.
- * Follows the real Tauri IPC contract:
- *   init_session(config) → session_id → start_session(session_id)
+ * This is the single source of truth for session lifecycle management.
+ *
+ * Live transcription path (inside Tauri desktop app):
+ *   initSession() → startSession() → Rust pipeline starts:
+ *     WASAPI capture → preprocessing → VAD → Whisper → events
+ *   Frontend listens on voxy://transcript-segment Tauri events.
+ *
+ * Dev/browser fallback (npm run dev, no Tauri shell):
+ *   Mock segments are injected every 2.5 s for UI development.
+ *   Browser SpeechRecognition is NOT used — it was removed because it
+ *   bypassed the native pipeline and produced unreliable multilingual output.
  */
 
 import {
   sessionStatus,
+  selectedDeviceId,
   errorMessage,
   sessionStartTime,
   segments,
@@ -16,7 +25,6 @@ import {
   clearSession,
   audioDevices,
   targetLanguage,
-  spokenLanguage,
 } from './sessionStore';
 import {
   initSession,
@@ -27,9 +35,11 @@ import {
   listAudioDevices,
   onTranscriptSegment,
   onSessionStatusChange,
+  onSessionError,
+  isTauri,
 } from './tauri';
-import { resetMockSegments } from './mockData';
-import type { SessionStatus } from '../types';
+import { nextMockSegment, resetMockSegments } from './mockData';
+import type { SessionStatus, TranscriptSegment } from '../types';
 import { get } from 'svelte/store';
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -37,386 +47,9 @@ import { get } from 'svelte/store';
 let _sessionId: string | null = null;
 let _unlistenTranscript: (() => void) | null = null;
 let _unlistenStatus: (() => void) | null = null;
-let _speechRecognition: any = null;   // single SpeechRecognition instance
-let _mediaStream: MediaStream | null = null;
-let _interimId: string | null = null;
+let _unlistenError: (() => void) | null = null;
+let _mockTimer: ReturnType<typeof setInterval> | null = null;
 let _initialized = false;
-let _micPermissionGranted = false;    // cached so we don't double-prompt
-
-// ── Language detection ────────────────────────────────────────────────────────
-
-export function detectLanguage(text: string): 'ta' | 'si' | 'en' | 'und' {
-  let ta = 0, si = 0, en = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0) ?? 0;
-    if (cp >= 0x0B80 && cp <= 0x0BFF) ta++;
-    else if (cp >= 0x0D80 && cp <= 0x0DFF) si++;
-    else if ((cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A)) en++;
-  }
-  if (ta === 0 && si === 0 && en === 0) return 'und';
-  if (ta > 0 && ta >= si) return 'ta';
-  if (si > 0 && si > ta) return 'si';
-  return en > 0 ? 'en' : 'und';
-}
-
-// ── Transliteration & Translation ─────────────────────────────────────────────
-
-export async function transliterate(text: string, lang: 'ta' | 'si'): Promise<string> {
-  if (!text || !text.trim()) return text;
-  try {
-    const itc = lang === 'ta' ? 'ta-t-i0-und' : 'si-t-i0-und';
-    const url = `https://inputtools.google.com/request?text=${encodeURIComponent(text)}&itc=${itc}&num=1`;
-    const res = await fetch(url);
-    if (!res.ok) return text;
-    const data = await res.json();
-    if (data[0] === 'SUCCESS' && data[1]?.[0]?.[1]?.[0]) {
-      return data[1][0][1][0];
-    }
-  } catch (e) {
-    console.warn('Transliteration fallback:', e);
-  }
-  return text;
-}
-
-export async function translateSegment(
-  text: string,
-  targetLang: string,
-): Promise<{ text: string; language: 'ta' | 'si' | 'en' | 'und'; detectedLang: 'ta' | 'si' | 'en' | 'und' }> {
-  const localDetected = detectLanguage(text);
-
-  // ── Target: Tamil (தமிழ்) ──────────────────────────────────────────────────
-  if (targetLang === 'ta') {
-    // If text already has native Tamil script, keep it directly
-    if (localDetected === 'ta') {
-      return { text, language: 'ta', detectedLang: 'ta' };
-    }
-
-    // Try Google Translate first (handles English -> Tamil: "what happening" -> "என்ன நடக்கிறது")
-    try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ta&dt=t&q=${encodeURIComponent(text)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const translated =
-          data[0]?.map((chunk: any) => chunk[0]).filter(Boolean).join('')?.trim() || text;
-        const apiDetected = data[2] || localDetected;
-
-        // If translation successfully produced Tamil script, return it!
-        if (detectLanguage(translated) === 'ta') {
-          const srcLang: 'ta' | 'si' | 'en' | 'und' =
-            typeof apiDetected === 'string' && apiDetected.startsWith('en')
-              ? 'en'
-              : typeof apiDetected === 'string' && apiDetected.startsWith('si')
-                ? 'si'
-                : 'ta';
-          return { text: translated, language: 'ta', detectedLang: srcLang };
-        }
-      }
-    } catch (e) {
-      console.warn('Google Translate error:', e);
-    }
-
-    // If Google Translate did NOT produce Tamil script (e.g. romanized Tamil "enna nadakuthu"),
-    // Google Input Tools transliterates it directly to native Tamil script: "என்ன நடக்குது"!
-    const transliterated = await transliterate(text, 'ta');
-    return {
-      text: transliterated,
-      language: 'ta',
-      detectedLang: 'ta',
-    };
-  }
-
-  // ── Target: Sinhala (සිංහල) ────────────────────────────────────────────────
-  if (targetLang === 'si') {
-    if (localDetected === 'si') {
-      return { text, language: 'si', detectedLang: 'si' };
-    }
-
-    try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=si&dt=t&q=${encodeURIComponent(text)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const translated =
-          data[0]?.map((chunk: any) => chunk[0]).filter(Boolean).join('')?.trim() || text;
-        const apiDetected = data[2] || localDetected;
-
-        if (detectLanguage(translated) === 'si') {
-          const srcLang: 'ta' | 'si' | 'en' | 'und' =
-            typeof apiDetected === 'string' && apiDetected.startsWith('en')
-              ? 'en'
-              : typeof apiDetected === 'string' && apiDetected.startsWith('ta')
-                ? 'ta'
-                : 'si';
-          return { text: translated, language: 'si', detectedLang: srcLang };
-        }
-      }
-    } catch (e) {
-      console.warn('Google Translate error:', e);
-    }
-
-    const transliterated = await transliterate(text, 'si');
-    return {
-      text: transliterated,
-      language: 'si',
-      detectedLang: 'si',
-    };
-  }
-
-  // ── Target: English ────────────────────────────────────────────────────────
-  if (targetLang === 'en') {
-    if (localDetected === 'en') {
-      const spoken = get(spokenLanguage);
-      if (spoken === 'ta') {
-        try {
-          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ta&tl=en&dt=t&q=${encodeURIComponent(text)}`;
-          const res = await fetch(url);
-          if (res.ok) {
-            const data = await res.json();
-            const translated = data[0]?.map((c: any) => c[0]).filter(Boolean).join('')?.trim();
-            if (translated && translated.toLowerCase() !== text.toLowerCase()) {
-              return { text: translated, language: 'en', detectedLang: 'ta' };
-            }
-          }
-        } catch {}
-      }
-      return { text, language: 'en', detectedLang: 'en' };
-    }
-
-    try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(text)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const translated = data[0]?.map((c: any) => c[0]).filter(Boolean).join('')?.trim() || text;
-        return { text: translated, language: 'en', detectedLang: localDetected };
-      }
-    } catch {}
-    return { text, language: 'en', detectedLang: localDetected };
-  }
-
-  // ── Target: Original (As Spoken) ───────────────────────────────────────────
-  const spoken = get(spokenLanguage);
-  if (spoken === 'ta' && localDetected !== 'ta') {
-    const transliterated = await transliterate(text, 'ta');
-    return { text: transliterated, language: 'ta', detectedLang: 'ta' };
-  }
-  if (spoken === 'si' && localDetected !== 'si') {
-    const transliterated = await transliterate(text, 'si');
-    return { text: transliterated, language: 'si', detectedLang: 'si' };
-  }
-
-  return { text, language: localDetected, detectedLang: localDetected };
-}
-
-// ── Microphone permission ─────────────────────────────────────────────────────
-
-async function _requestMicPermission(): Promise<boolean> {
-  if (_micPermissionGranted) return true;
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false;
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    stream.getTracks().forEach((t) => t.stop());
-    _micPermissionGranted = true;
-    return true;
-  } catch (e) {
-    console.warn('Microphone permission denied:', e);
-    return false;
-  }
-}
-
-// ── Speech recognition (single instance, one language at a time) ──────────────
-
-function _pickLocale(spoken: string, target: string): string {
-  if (spoken === 'ta') return 'ta-IN';
-  if (spoken === 'si') return 'si-LK';
-  if (spoken === 'en') return 'en-US';
-  // spoken === 'auto' — mirror target so native script is captured
-  if (target === 'ta') return 'ta-IN';
-  if (target === 'si') return 'si-LK';
-  return 'en-US';
-}
-
-function _startSpeechRecognition(): void {
-  if (typeof window === 'undefined') return;
-
-  const SpeechRec =
-    (window as any).SpeechRecognition ||
-    (window as any).webkitSpeechRecognition;
-
-  if (!SpeechRec) {
-    errorMessage.set(
-      'Speech recognition is not available. Enable it in Windows Settings → Time & Language → Speech.',
-    );
-    return;
-  }
-
-  // Fire-and-forget async wrapper — errors are caught internally, never bubble up
-  void (async () => {
-    // Ensure mic permission before starting (required by WebView2)
-    const hasPermission = await _requestMicPermission();
-    if (!hasPermission) {
-      errorMessage.set(
-        'Microphone permission denied. Go to Windows Settings → Privacy → Microphone and allow access.',
-      );
-      sessionStatus.set('idle');
-      return;
-    }
-
-    // Guard: session may have been stopped while we awaited permission
-    if (get(sessionStatus) !== 'active') return;
-
-    try {
-      const recognition = new SpeechRec();
-      recognition.continuous    = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 3;   // try top-3 alternatives for better accuracy
-      recognition.lang = _pickLocale(get(spokenLanguage), get(targetLanguage));
-
-      // Visual feedback: show when audio is actually being captured
-      recognition.onsoundstart = () => {
-        if (get(sessionStatus) === 'active') errorMessage.set(null);
-      };
-      recognition.onspeechend = () => {
-        // speech ended — recognition will finalize and onend will restart
-      };
-
-      recognition.onresult = async (event: any) => {
-        if (get(sessionStatus) !== 'active') return;
-
-        let interimText = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const item    = event.results[i];
-          // Pick the best alternative: prefer any that contains native script (ta/si)
-          let rawText = item[0]?.transcript?.trim();
-          for (let a = 1; a < item.length; a++) {
-            const alt = item[a]?.transcript?.trim();
-            if (alt && detectLanguage(alt) !== 'en' && detectLanguage(rawText || '') === 'en') {
-              rawText = alt; // prefer native-script alternative over romanised
-            }
-          }
-          if (!rawText) continue;
-
-          if (item.isFinal) {
-            const tgt = get(targetLanguage);
-            const { text, language, detectedLang } = await translateSegment(rawText, tgt);
-            const startTime  = get(sessionStartTime) ?? Date.now();
-            const elapsedSec = (Date.now() - startTime) / 1000;
-
-            let speakerLabel = 'Speaker';
-            if (detectedLang !== 'und' && tgt !== 'auto' && detectedLang !== tgt) {
-              speakerLabel = `Speaker (${detectedLang.toUpperCase()} → ${tgt.toUpperCase()})`;
-            }
-
-            if (_interimId) {
-              upsertSegment({
-                id: _interimId,
-                text,
-                start_time: Math.max(0, elapsedSec - 2.5),
-                end_time: elapsedSec,
-                speaker: speakerLabel,
-                language,
-              });
-              _interimId = null;
-            } else {
-              appendSegment({
-                id: `speech-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                text,
-                start_time: Math.max(0, elapsedSec - 2.5),
-                end_time: elapsedSec,
-                speaker: speakerLabel,
-                language,
-              });
-            }
-          } else {
-            interimText += rawText + ' ';
-          }
-        }
-
-        // Real-time interim display
-        if (interimText.trim()) {
-          if (!_interimId) _interimId = `interim-${Date.now()}`;
-          const startTime  = get(sessionStartTime) ?? Date.now();
-          const elapsedSec = (Date.now() - startTime) / 1000;
-          const tgt = get(targetLanguage);
-          upsertSegment({
-            id: _interimId,
-            text: interimText.trim() + ' …',
-            start_time: Math.max(0, elapsedSec - 1),
-            end_time: elapsedSec,
-            speaker: 'Live Speaker',
-            language: tgt === 'auto' ? 'en' : (tgt as any),
-          });
-        }
-      };
-
-      recognition.onerror = (e: any) => {
-        const err = e?.error || '';
-        // 'no-speech' is normal (silence), 'aborted' happens on stop — ignore both
-        if (err === 'no-speech' || err === 'aborted') return;
-
-        // If Windows does not have the Tamil/Sinhala speech pack installed,
-        // automatically fall back to en-US. Our transliteration pipeline converts
-        // the resulting phonetic speech into native script automatically!
-        if (err === 'language-not-supported' && recognition.lang !== 'en-US') {
-          console.warn(`Speech recognition locale '${recognition.lang}' not installed on this PC, switching to en-US with AI transliteration`);
-          recognition.lang = 'en-US';
-          try { recognition.start(); } catch {}
-          return;
-        }
-
-        // Show actionable errors to the user
-        if (err === 'not-allowed' || err === 'service-not-allowed') {
-          errorMessage.set('Microphone access denied. Go to Windows Settings → Privacy → Microphone and allow VOXY.');
-        } else if (err === 'network') {
-          errorMessage.set('Network error during transcription. Check your internet connection.');
-        } else if (err === 'audio-capture') {
-          errorMessage.set('Could not access microphone. Make sure no other app is using it exclusively.');
-        } else {
-          console.warn('Speech recognition error:', err, e);
-        }
-      };
-
-      let _restartTimer: ReturnType<typeof setTimeout> | null = null;
-
-      recognition.onend = () => {
-        // Clear any pending restart timer
-        if (_restartTimer) { clearTimeout(_restartTimer); _restartTimer = null; }
-
-        // Auto-restart after a short delay to avoid tight loops and race conditions.
-        // The delay also prevents WebView2 from throttling rapid restart attempts.
-        if (get(sessionStatus) === 'active') {
-          _restartTimer = setTimeout(() => {
-            if (get(sessionStatus) === 'active' && _speechRecognition === recognition) {
-              try { recognition.start(); } catch { /* recognition already restarting */ }
-            }
-          }, 300);
-        }
-      };
-
-      recognition.start();
-      _speechRecognition = recognition;
-    } catch (err) {
-      console.warn('Could not start SpeechRecognition:', err);
-    }
-  })();
-}
-
-function _stopSpeechRecognition(): void {
-  if (_speechRecognition) {
-    try { _speechRecognition.stop(); } catch { /* ignore */ }
-    _speechRecognition = null;
-  }
-  _interimId = null;
-}
-
-function _stopMediaStream(): void {
-  if (_mediaStream) {
-    try { _mediaStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
-    _mediaStream = null;
-  }
-}
 
 // ── Init once at app startup ──────────────────────────────────────────────────
 
@@ -424,169 +57,172 @@ export async function initSessionController(): Promise<void> {
   if (_initialized) return;
   _initialized = true;
 
-  // Load audio devices (always returns at least 4 fallback entries)
-  try {
-    const devices = await listAudioDevices();
-    audioDevices.set(devices);
-  } catch (e) {
-    console.warn('Could not enumerate audio devices:', e);
+  // Load audio device list
+  const devices = await listAudioDevices();
+  audioDevices.set(devices);
+  if (devices.length > 0) {
+    const current = get(selectedDeviceId);
+    const known = devices.find((d) => d.id === current);
+    if (!known) {
+      selectedDeviceId.set(
+        devices.find((d) => d.is_default)?.id ?? devices[0].id,
+      );
+    }
+  }
+
+  // Keep device list fresh when hardware changes
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      audioDevices.set(await listAudioDevices());
+    });
   }
 
   // Listen for backend session-state events
-  try {
-    _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
-      // Only update from backend if we have an active backend session
-      if (_sessionId) sessionStatus.set(status);
-    });
-  } catch (e) {
-    console.warn('Could not register session status listener:', e);
-  }
-
-  // Update device list when hardware changes (mic plugged in, Zoom virtual device, etc.)
-  if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
-    navigator.mediaDevices.addEventListener('devicechange', async () => {
-      try {
-        const updated = await listAudioDevices();
-        audioDevices.set(updated);
-      } catch { /* ignore */ }
-    });
-  }
-
-  // Update recognition language dynamically if user changes it
-  spokenLanguage.subscribe((spoken) => {
-    if (_speechRecognition && get(sessionStatus) === 'active') {
-      try {
-        _speechRecognition.lang = _pickLocale(spoken, get(targetLanguage));
-      } catch {}
-    }
-  });
-  targetLanguage.subscribe((target) => {
-    if (_speechRecognition && get(sessionStatus) === 'active') {
-      try {
-        _speechRecognition.lang = _pickLocale(get(spokenLanguage), target);
-      } catch {}
-    }
+  _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
+    sessionStatus.set(status);
   });
 }
 
 // ── Session commands ──────────────────────────────────────────────────────────
 
-export async function handleStart(_deviceId: string): Promise<void> {
+export async function handleStart(deviceId: string): Promise<void> {
   errorMessage.set(null);
+  const previousSegments = get(segments);
   sessionStatus.set('starting');
 
-  try {
-    clearSession();
-    resetMockSegments();
-
-    // ── Step 1: Try to init backend session (non-fatal if it fails) ──
+  // ── Tauri desktop path ────────────────────────────────────────────────────
+  if (isTauri()) {
     try {
-      const devs = get(audioDevices);
-      const chosen = devs.find((d) => d.id === _deviceId);
-      let audioSource: 'Loopback' | 'Microphone' | 'Both' = 'Both';
-      if (chosen?.name.toLowerCase().includes('mic')) audioSource = 'Microphone';
-      else if (chosen?.name.toLowerCase().includes('speaker') || chosen?.name.toLowerCase().includes('loopback'))
-        audioSource = 'Loopback';
-
+      // 1. Create the session on the Rust backend
       const sessionInfo = await initSession({
-        audio_source: audioSource,
-        language_hint: get(spokenLanguage) || 'auto',
+        audio_source: 'Both',          // loopback + microphone
+        language_hint: 'auto',         // Whisper auto-detects Tamil/Sinhala/English
         enable_diarization: false,
         show_partial_results: true,
+        loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
       });
       _sessionId = sessionInfo.session_id;
+
+      // 2. Start the native pipeline — WASAPI capture → Whisper
       await startSession(_sessionId);
 
-      // Listen for Rust-emitted transcript segments
-      _unlistenTranscript = await onTranscriptSegment(async (segment) => {
-        appendSegment(segment);
+      // 3. Subscribe to transcript segments from the native pipeline
+      _unlistenTranscript = await onTranscriptSegment((segment: TranscriptSegment) => {
+        const tgt = get(targetLanguage);
+        if (tgt && tgt !== 'auto' && segment.language !== tgt) {
+          // If a specific output language is selected, still show the segment
+          // in its original language — translation is not done automatically.
+          // The segment is shown as-is; the language tag reflects the detected script.
+        }
+        if (segment.is_partial) {
+          // Update or insert partial segment in-place
+          upsertSegment(segment);
+        } else {
+          // Remove any matching partial before appending the final
+          segments.update(all => {
+            const withoutPartial = all.filter(s => !(s.is_partial && s.id === segment.id));
+            return [...withoutPartial, segment];
+          });
+        }
       });
-    } catch (backendErr) {
-      // Backend init failed — that's OK, speech-only mode works fine
-      console.warn('Backend session init failed, running in speech-only mode:', backendErr);
+
+      // 4. Subscribe to backend error events
+      _unlistenError = await onSessionError(({ code, message }) => {
+        errorMessage.set(`[${code}] ${message}`);
+      });
+
+      clearSession();
+      resetMockSegments();
+      sessionStatus.set('active');
+      sessionStartTime.set(Date.now());
+
+      return; // Native path done — do not fall through to mock
+    } catch (err) {
+      // Native pipeline failed — show the error clearly, do not silently fall back
+      const msg = String(err);
+      errorMessage.set(
+        msg.includes('model not found') || msg.includes('main.exe')
+          ? 'Whisper model or CLI not found. Place ggml-base.bin and main.exe in the models/ folder next to the app.'
+          : `Failed to start session: ${msg}`
+      );
+      sessionStatus.set('idle');
+      segments.set(previousSegments);
       _sessionId = null;
+      return;
     }
-
-    // ── Step 2: Get mic permission via getUserMedia, then RELEASE the stream ──
-    // SpeechRecognition manages its own audio input internally.
-    // Holding a getUserMedia stream open at the same time causes them to
-    // compete for the microphone → degraded / broken recognition quality.
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-      try {
-        const probeStream = await navigator.mediaDevices.getUserMedia({
-          audio: _deviceId && _deviceId !== 'default'
-            ? { deviceId: { exact: _deviceId }, echoCancellation: true, noiseSuppression: true }
-            : { echoCancellation: true, noiseSuppression: true },
-        });
-        // Release immediately — permission is now cached by the browser/WebView2
-        probeStream.getTracks().forEach((t) => t.stop());
-        _micPermissionGranted = true;
-      } catch (e) {
-        console.warn('Could not get microphone permission:', e);
-        // Non-fatal — SpeechRecognition will try anyway and show its own error
-      }
-    }
-
-    // ── Step 3: Mark active and start live transcription ──
-    sessionStatus.set('active');
-    sessionStartTime.set(Date.now());
-    _startSpeechRecognition();
-
-  } catch (err) {
-    // Outer catch — something truly unexpected happened
-    errorMessage.set(`Failed to start: ${String(err)}`);
-    sessionStatus.set('idle');
-    _sessionId = null;
   }
+
+  // ── Browser dev path (no Tauri shell) ────────────────────────────────────
+  // Used only when running `npm run dev` in a browser for UI development.
+  // Injects mock transcript segments to simulate the live transcript panel.
+  clearSession();
+  resetMockSegments();
+  sessionStatus.set('active');
+  sessionStartTime.set(Date.now());
+  _mockTimer = setInterval(() => {
+    if (get(sessionStatus) === 'active') {
+      appendSegment(nextMockSegment());
+    }
+  }, 2500);
 }
 
 export async function handlePause(): Promise<void> {
-  _stopSpeechRecognition();
-  _stopMediaStream();
-
-  if (_sessionId) {
-    try {
+  if (isTauri() && !_sessionId) return;
+  try {
+    if (isTauri() && _sessionId) {
       await pauseSession(_sessionId);
-    } catch (e) {
-      console.warn('Backend pause failed:', e);
     }
+    sessionStatus.set('paused');
+    _stopMockTimer();
+  } catch (err) {
+    errorMessage.set(String(err));
   }
-
-  sessionStatus.set('paused');
 }
 
 export async function handleResume(): Promise<void> {
-  if (_sessionId) {
-    try {
+  if (isTauri() && !_sessionId) return;
+  try {
+    if (isTauri() && _sessionId) {
       await resumeSession(_sessionId);
-    } catch (e) {
-      console.warn('Backend resume failed:', e);
     }
+    sessionStatus.set('active');
+    if (!isTauri()) {
+      _mockTimer = setInterval(() => {
+        if (get(sessionStatus) === 'active') appendSegment(nextMockSegment());
+      }, 2500);
+    }
+  } catch (err) {
+    errorMessage.set(String(err));
   }
-
-  sessionStatus.set('active');
-  _startSpeechRecognition();
 }
 
 export async function handleStop(): Promise<void> {
-  // Stop everything locally first — this is instant and never crashes
-  _stopSpeechRecognition();
-  _stopMediaStream();
+  const previousStatus = get(sessionStatus);
+  sessionStatus.set('stopping');
 
-  _unlistenTranscript?.();
-  _unlistenTranscript = null;
-
-  sessionStatus.set('stopped');
-  sessionStartTime.set(null);
-
-  // Then tell the backend (non-fatal if it fails — session is already stopped locally)
-  if (_sessionId) {
-    const sid = _sessionId;
-    _sessionId = null;
-    try {
-      await stopSession(sid);
-    } catch (e) {
-      console.warn('Backend stop session failed (session already cleaned up locally):', e);
+  try {
+    if (isTauri() && _sessionId) {
+      await stopSession(_sessionId);
     }
+    _stopMockTimer();
+    _unlistenTranscript?.();
+    _unlistenTranscript = null;
+    _unlistenError?.();
+    _unlistenError = null;
+    sessionStatus.set('stopped');
+    sessionStartTime.set(null);
+    _sessionId = null;
+  } catch (err) {
+    errorMessage.set(String(err));
+    sessionStatus.set(previousStatus);
+  }
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+function _stopMockTimer(): void {
+  if (_mockTimer) {
+    clearInterval(_mockTimer);
+    _mockTimer = null;
   }
 }
