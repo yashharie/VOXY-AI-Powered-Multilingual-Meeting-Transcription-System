@@ -159,8 +159,16 @@ function _startSpeechRecognition(): void {
       const recognition = new SpeechRec();
       recognition.continuous    = true;
       recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
+      recognition.maxAlternatives = 3;   // try top-3 alternatives for better accuracy
       recognition.lang = _pickLocale(get(spokenLanguage), get(targetLanguage));
+
+      // Visual feedback: show when audio is actually being captured
+      recognition.onsoundstart = () => {
+        if (get(sessionStatus) === 'active') errorMessage.set(null);
+      };
+      recognition.onspeechend = () => {
+        // speech ended — recognition will finalize and onend will restart
+      };
 
       recognition.onresult = async (event: any) => {
         if (get(sessionStatus) !== 'active') return;
@@ -169,7 +177,14 @@ function _startSpeechRecognition(): void {
 
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           const item    = event.results[i];
-          const rawText = item[0]?.transcript?.trim();
+          // Pick the best alternative: prefer any that contains native script (ta/si)
+          let rawText = item[0]?.transcript?.trim();
+          for (let a = 1; a < item.length; a++) {
+            const alt = item[a]?.transcript?.trim();
+            if (alt && detectLanguage(alt) !== 'en' && detectLanguage(rawText || '') === 'en') {
+              rawText = alt; // prefer native-script alternative over romanised
+            }
+          }
           if (!rawText) continue;
 
           if (item.isFinal) {
@@ -228,15 +243,34 @@ function _startSpeechRecognition(): void {
       recognition.onerror = (e: any) => {
         const err = e?.error || '';
         // 'no-speech' is normal (silence), 'aborted' happens on stop — ignore both
-        if (err !== 'no-speech' && err !== 'aborted') {
+        if (err === 'no-speech' || err === 'aborted') return;
+
+        // Show actionable errors to the user
+        if (err === 'not-allowed' || err === 'service-not-allowed') {
+          errorMessage.set('Microphone access denied. Go to Windows Settings → Privacy → Microphone and allow VOXY.');
+        } else if (err === 'network') {
+          errorMessage.set('Network error during transcription. Check your internet connection.');
+        } else if (err === 'audio-capture') {
+          errorMessage.set('Could not access microphone. Make sure no other app is using it exclusively.');
+        } else {
           console.warn('Speech recognition error:', err, e);
         }
       };
 
+      let _restartTimer: ReturnType<typeof setTimeout> | null = null;
+
       recognition.onend = () => {
-        // Auto-restart only if the session is still active
+        // Clear any pending restart timer
+        if (_restartTimer) { clearTimeout(_restartTimer); _restartTimer = null; }
+
+        // Auto-restart after a short delay to avoid tight loops and race conditions.
+        // The delay also prevents WebView2 from throttling rapid restart attempts.
         if (get(sessionStatus) === 'active') {
-          try { recognition.start(); } catch { /* already started or stopped */ }
+          _restartTimer = setTimeout(() => {
+            if (get(sessionStatus) === 'active' && _speechRecognition === recognition) {
+              try { recognition.start(); } catch { /* recognition already restarting */ }
+            }
+          }, 300);
         }
       };
 
@@ -336,17 +370,23 @@ export async function handleStart(_deviceId: string): Promise<void> {
       _sessionId = null;
     }
 
-    // ── Step 2: Bind microphone stream to chosen device ──
+    // ── Step 2: Get mic permission via getUserMedia, then RELEASE the stream ──
+    // SpeechRecognition manages its own audio input internally.
+    // Holding a getUserMedia stream open at the same time causes them to
+    // compete for the microphone → degraded / broken recognition quality.
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
       try {
-        _mediaStream = await navigator.mediaDevices.getUserMedia({
+        const probeStream = await navigator.mediaDevices.getUserMedia({
           audio: _deviceId && _deviceId !== 'default'
             ? { deviceId: { exact: _deviceId }, echoCancellation: true, noiseSuppression: true }
             : { echoCancellation: true, noiseSuppression: true },
         });
-        _micPermissionGranted = true;  // getUserMedia succeeded — cache permission
+        // Release immediately — permission is now cached by the browser/WebView2
+        probeStream.getTracks().forEach((t) => t.stop());
+        _micPermissionGranted = true;
       } catch (e) {
-        console.warn('Could not bind audio device stream:', e);
+        console.warn('Could not get microphone permission:', e);
+        // Non-fatal — SpeechRecognition will try anyway and show its own error
       }
     }
 
