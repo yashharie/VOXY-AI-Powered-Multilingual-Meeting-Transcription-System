@@ -1,7 +1,8 @@
 <script lang="ts">
   import {
     sessionStatus,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
     audioDevices,
     errorMessage,
     meetingPlatform,
@@ -62,15 +63,32 @@
   </div>
 
   <div class="field-row">
-    <label for="device-select" class="field-label">Audio device</label>
+    <label for="output-device-select" class="field-label">System audio output</label>
     <select
-      id="device-select"
+      id="output-device-select"
       class="field-select"
-      bind:value={$selectedDeviceId}
+      bind:value={$selectedOutputDeviceId}
       disabled={!isIdle}
-      aria-label="Select audio output device"
+      aria-label="Select system audio output for meeting capture"
     >
-      {#each $audioDevices as device (device.id)}
+      {#each $audioDevices.filter((device) => device.kind === 'output') as device (device.id)}
+        <option value={device.id}>
+          {device.name}{device.is_default ? ' (default)' : ''}
+        </option>
+      {/each}
+    </select>
+  </div>
+
+  <div class="field-row">
+    <label for="microphone-device-select" class="field-label">Microphone input</label>
+    <select
+      id="microphone-device-select"
+      class="field-select"
+      bind:value={$selectedMicrophoneDeviceId}
+      disabled={!isIdle}
+      aria-label="Select microphone input for voice capture"
+    >
+      {#each $audioDevices.filter((device) => device.kind === 'input') as device (device.id)}
         <option value={device.id}>
           {device.name}{device.is_default ? ' (default)' : ''}
         </option>
@@ -109,7 +127,7 @@
   <div class="button-row">
     <button
       class="btn btn-start"
-      on:click={() => handleStart($selectedDeviceId)}
+      on:click={() => handleStart($selectedOutputDeviceId, $selectedMicrophoneDeviceId)}
       disabled={!isIdle || isBusy || $selectedLanguages.length === 0}
       aria-label="Start transcription session"
     >▶ Start</button>
