@@ -132,30 +132,29 @@ async fn run_inference_queue(
                     if result.text.trim().is_empty() {
                         continue;
                     }
-                    result.is_partial = job.is_partial;
+                    // Every completed Whisper window contains usable transcript text.
+                    // Continuous-speech windows overlap the next window by 800 ms; commit
+                    // their segments now and let TranscriptProcessor suppress duplicates.
+                    // Treating the whole window as provisional caused all earlier speech
+                    // to be discarded when the final window arrived at Stop.
+                    result.is_partial = false;
                     let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
                     let mut segment = transcript_proc.build_segment(result.clone(), speaker);
 
-                    if result.is_partial && show_partial {
+                    if transcript_proc.is_duplicate(&segment) {
+                        continue;
+                    }
+
+                    let idx = session.push_segment(segment.clone());
+                    if idx > 0 {
+                        // Session::push_segment assigns the index to its stored copy.
+                        // Copy that index onto the event payload too: the frontend uses
+                        // it as the stable segment ID for keyed rendering.
+                        segment.index = idx;
+                        transcript_proc.register(&segment);
                         crate::core::events::emit_transcript_segment(
                             &app, &session.id(), segment,
                         );
-                    } else if !result.is_partial {
-                        if transcript_proc.is_duplicate(&segment) {
-                            continue;
-                        }
-
-                        let idx = session.push_segment(segment.clone());
-                        if idx > 0 {
-                            // Session::push_segment assigns the index to its stored copy.
-                            // Copy that index onto the event payload too: the frontend uses
-                            // it as the stable segment ID for keyed rendering.
-                            segment.index = idx;
-                            transcript_proc.register(&segment);
-                            crate::core::events::emit_transcript_segment(
-                                &app, &session.id(), segment,
-                            );
-                        }
                     }
                 }
             }
