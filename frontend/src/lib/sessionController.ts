@@ -24,8 +24,7 @@ import {
   upsertSegment,
   clearSession,
   audioDevices,
-  targetLanguage,
-  spokenLanguage,
+  selectedLanguages,
 } from './sessionStore';
 import {
   initSession,
