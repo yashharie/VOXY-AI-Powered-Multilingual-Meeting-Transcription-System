@@ -10,7 +10,8 @@
 
 use tauri::{AppHandle, Manager, State};
 
-use super::error::{AppResult, IpcResult};
+use crate::audio_capture::device::{AudioDevice, DeviceEnumerator};
+use super::error::{AppError, AppResult, IpcResult};
 use super::events;
 use super::state::AppState;
 use super::types::{AppVersion, SessionConfig, SessionInfo, TranscriptSegment};
@@ -32,6 +33,22 @@ pub fn get_app_version() -> AppVersion {
         tauri_version: "2".to_string(),
         build_target: std::env::consts::OS.to_string(),
     }
+}
+
+/// Enumerate real Windows playback and microphone endpoints. The returned IDs
+/// are WASAPI endpoint IDs and can be passed back into SessionConfig.
+#[tauri::command]
+pub fn list_audio_devices() -> IpcResult<Vec<AudioDevice>> {
+    let result: AppResult<Vec<AudioDevice>> = (|| {
+        let mut devices = DeviceEnumerator::list_output_devices()
+            .map_err(|error| AppError::Internal(format!("Output device enumeration failed: {error}")))?;
+        let inputs = DeviceEnumerator::list_input_devices()
+            .map_err(|error| AppError::Internal(format!("Input device enumeration failed: {error}")))?;
+        devices.extend(inputs);
+        Ok(devices)
+    })();
+
+    result.into()
 }
 
 // ─── Session lifecycle commands ───────────────────────────────────────────────
