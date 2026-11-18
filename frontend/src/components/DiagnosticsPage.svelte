@@ -7,7 +7,8 @@
     errorMessage,
   } from '../lib/sessionStore';
 
-  $: deviceName = $audioDevices.find((d) => d.id === $selectedDeviceId)?.name ?? $selectedDeviceId;
+  $: outputDeviceName = $audioDevices.find((d) => d.id === $selectedOutputDeviceId)?.name ?? $selectedOutputDeviceId;
+  $: microphoneDeviceName = $audioDevices.find((d) => d.id === $selectedMicrophoneDeviceId)?.name ?? $selectedMicrophoneDeviceId;
 
   $: audioCapture   = $sessionStatus === 'active' || $sessionStatus === 'paused' ? 'Active' : 'Inactive';
   $: transcription  = $sessionStatus === 'active' ? 'Running' : $sessionStatus === 'paused' ? 'Paused' : 'Stopped';
