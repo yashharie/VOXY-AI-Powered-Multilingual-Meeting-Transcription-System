@@ -13,9 +13,9 @@
   $: audioCapture   = $sessionStatus === 'active' || $sessionStatus === 'paused' ? 'Active' : 'Inactive';
   $: transcription  = $sessionStatus === 'active' ? 'Running' : $sessionStatus === 'paused' ? 'Paused' : 'Stopped';
 
-  // These will be provided by the Tauri backend once integrated.
-  // Until then they are explicitly marked as unavailable.
-  const NOT_AVAILABLE = 'Not available';
+  // Audio and transcription timing are logged by Rust. Runtime metrics are
+  // not yet exposed through a dedicated diagnostics IPC command.
+  const NOT_AVAILABLE = 'Not available yet';
 </script>
 
 <div class="diag-page" aria-label="Diagnostics">
