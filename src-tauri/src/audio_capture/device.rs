@@ -4,6 +4,7 @@
 //! list of available endpoints, each carrying the information needed to
 //! display a device selection UI and to open a capture session.
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use wasapi::{DeviceCollection, Direction};
 
