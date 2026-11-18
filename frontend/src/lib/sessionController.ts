@@ -140,7 +140,11 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
         } else {
           // Keep previously recognized windows. The native pipeline commits each
           // completed window and deduplicates its overlap before emitting it.
-          segments.update(all => [...all, segment]);
+          segments.update(all =>
+            [...all, segment].sort((a, b) =>
+              a.start_time - b.start_time || a.id.localeCompare(b.id)
+            )
+          );
         }
       });
 
