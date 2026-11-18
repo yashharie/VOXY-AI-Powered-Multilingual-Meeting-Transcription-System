@@ -44,7 +44,7 @@
 
       <div class="diag-row">
         <dt>AI model</dt>
-        <dd class="unavailable">Not loaded — backend not yet integrated</dd>
+        <dd class="unavailable">Runtime status not exposed yet</dd>
       </div>
 
       <div class="diag-row">
