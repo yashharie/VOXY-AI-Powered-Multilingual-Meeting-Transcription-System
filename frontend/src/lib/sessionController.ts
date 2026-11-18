@@ -102,10 +102,14 @@ export async function handleStart(deviceId: string): Promise<void> {
   // ── Tauri desktop path ────────────────────────────────────────────────────
   if (isTauri()) {
     try {
-      // The spoken-language selector controls Whisper's input language.
-      // targetLanguage is only the desired output language; VOXY does not
-      // translate recognized speech, so it must not be passed to Whisper.
-      const languageHint = get(spokenLanguage);
+      // A single selected language can be passed directly to Whisper.
+      // Multiple selected languages use auto-detection and are validated
+      // per transcript segment by the native speech-recognition module.
+      const languages = get(selectedLanguages);
+      if (languages.length === 0) {
+        throw new Error('Select at least one language to transcribe.');
+      }
+      const languageHint = languages.length === 1 ? languages[0] : 'auto';
 
       // Clear the previous session before starting so early native events
       // cannot be erased by a later clearSession() call.
