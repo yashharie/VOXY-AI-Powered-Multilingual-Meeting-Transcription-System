@@ -75,9 +75,13 @@ Do not combine all languages into one WER/CER number; report each language and c
 
 ## Current implementation notes
 
-- Inference is now handled by a separate bounded queue so the capture receive loop does not directly await each Whisper invocation.
-- Queue back-pressure is logged when the queue is saturated; the queue is bounded to prevent unbounded memory growth.
-- The current whisper.cpp CLI integration still starts a CLI process for each inference window. A persistent in-process Whisper runtime or long-lived server is a separate required optimization before claiming model warm-start behaviour.
+- Inference is handled by a separate bounded queue. Queue wait, inference duration, audio duration, and real-time factor are logged for each job.
+- The current whisper.cpp CLI integration still starts a new CLI process and loads the model for every inference window. A persistent in-process runtime or long-lived server remains the main performance optimization; current timings must not be described as warm-start performance.
+- Continuous-speech windows are now committed to the session instead of being discarded as provisional previews. The overlap deduplicator suppresses repeated text from adjacent windows. This fixes the previous behaviour where Stop removed earlier partial transcript rows.
+- Tamil, Sinhala, and English can be selected together. Multiple selected languages use Whisper auto-detection; each returned segment is then labelled from its Unicode script and filtered against the selected languages. A mixed-script segment is labelled `mul`.
+- Segment-level script detection is a best-effort label/filter, not a multilingual acoustic language detector. Whisper still detects one dominant language for each audio window, so actual code-switching accuracy must be measured with the test corpus above.
+- Desktop device selection now uses native WASAPI endpoint IDs and keeps microphone input separate from system playback output. Browser MediaDeviceInfo IDs are not valid WASAPI endpoint IDs.
+- WASAPI sample conversion accepts 32-bit float, signed 16-bit PCM, and packed 24-bit PCM. Other sample widths are still unsupported and must be confirmed from device diagnostics.
 - The application still needs real Windows measurements. Passing unit tests or compiling successfully is not evidence of transcription accuracy.
 
 ## Required report
