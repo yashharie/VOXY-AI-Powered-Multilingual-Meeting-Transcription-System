@@ -174,6 +174,14 @@ impl Session {
         inner.segment_counter += 1;
         segment.index = inner.segment_counter;
         inner.transcript.push(segment);
+        // Loopback and microphone inference can finish in a different order from
+        // their capture timestamps. Keep the public transcript chronological while
+        // retaining the monotonic index used by the frontend as a stable ID.
+        inner.transcript.sort_by(|a, b| {
+            a.start_time
+                .total_cmp(&b.start_time)
+                .then_with(|| a.index.cmp(&b.index))
+        });
         inner.segment_counter
     }
 
