@@ -6,7 +6,7 @@ export interface TranscriptSegment {
   end_time: number;
   /** Speaker label from diarization, or null/undefined if diarization is off */
   speaker: string | null;
-  language: 'si' | 'ta' | 'en' | 'und';
+  language: 'si' | 'ta' | 'en' | 'mul' | 'und';
   is_partial?: boolean;
 }
 
