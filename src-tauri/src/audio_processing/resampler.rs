@@ -195,7 +195,7 @@ impl Resampler {
         // has been emitted; cap the returned result to the exact resampled length.
         while self.raw_output_frames < required_raw_frames {
             let output = resampler
-                .process_partial(None, None)
+                .process_partial::<&[f32]>(None, None)
                 .map_err(|_| ResamplingError::ProcessingFailed)?;
             let output_frames = output.first().map_or(0, Vec::len);
             if output_frames == 0 {
