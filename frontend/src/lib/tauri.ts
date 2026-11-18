@@ -202,7 +202,7 @@ export async function onTranscriptSegment(
         end_time: typeof seg.end_time === 'number' ? seg.end_time : 0,
         // speaker is Option<String> from Rust — may be null
         speaker: (seg.speaker as string) || null,
-        language: (seg.language as 'si' | 'ta' | 'en' | 'und') || 'und',
+        language: (seg.language as 'si' | 'ta' | 'en' | 'mul' | 'und') || 'und',
         is_partial: Boolean(seg.is_partial),
       };
       callback(normalized);
