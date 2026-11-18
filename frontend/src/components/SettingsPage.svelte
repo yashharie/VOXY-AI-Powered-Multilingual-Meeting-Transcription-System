@@ -14,7 +14,7 @@
     { code: 'ta', label: 'Tamil' },
   ] as const;
 
-  $: isSessionActive = $sessionStatus === 'active' || $sessionStatus === 'paused';
+  $: isSessionActive = $sessionStatus !== 'idle' && $sessionStatus !== 'stopped';
 
   function toggleLanguage(code: 'en' | 'si' | 'ta') {
     selectedLanguages.update((current) => {
