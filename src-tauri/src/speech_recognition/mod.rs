@@ -455,7 +455,7 @@ fn classify_segment_language(
         let language = match code {
             0x0B80..=0x0BFF => Some("ta"),
             0x0D80..=0x0DFF => Some("si"),
-            _ if ch.is_ascii_alphabetic() => Some("en"),
+            _ if ch.is_ascii_alphabetic() || (0x00C0..=0x024F).contains(&code) => Some("en"),
             _ => {
                 unsupported_script = true;
                 None
@@ -715,6 +715,10 @@ mod tests {
         );
         assert_eq!(
             classify_segment_language("Good morning", "ta", &allowed).as_deref(),
+            Some("en")
+        );
+        assert_eq!(
+            classify_segment_language("Café meeting", "ta", &allowed).as_deref(),
             Some("en")
         );
     }
