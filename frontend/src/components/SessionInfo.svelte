@@ -8,7 +8,8 @@
     meetingPlatform,
     sessionName,
     audioDevices,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
     selectedLanguages,
   } from '../lib/sessionStore';
   import { formatTime } from '../lib/utils';
@@ -37,7 +38,8 @@
 
   // ── Derived display values ────────────────────────────────────────────────
 
-  $: deviceName = $audioDevices.find((d) => d.id === $selectedDeviceId)?.name ?? $selectedDeviceId;
+  $: outputDeviceName = $audioDevices.find((d) => d.id === $selectedOutputDeviceId)?.name ?? $selectedOutputDeviceId;
+  $: microphoneDeviceName = $audioDevices.find((d) => d.id === $selectedMicrophoneDeviceId)?.name ?? $selectedMicrophoneDeviceId;
 
   const langLabels: Record<string, string> = {
     en: 'English', si: 'Sinhala', ta: 'Tamil', mul: 'Mixed', und: 'Unknown',
@@ -62,8 +64,13 @@
     </div>
 
     <div class="info-row">
-      <dt>Device</dt>
-      <dd class="truncate" title={deviceName}>{deviceName}</dd>
+      <dt>System audio</dt>
+      <dd class="truncate" title={outputDeviceName}>{outputDeviceName}</dd>
+    </div>
+
+    <div class="info-row">
+      <dt>Microphone</dt>
+      <dd class="truncate" title={microphoneDeviceName}>{microphoneDeviceName}</dd>
     </div>
 
     <div class="info-row">
