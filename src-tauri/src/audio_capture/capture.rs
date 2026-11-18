@@ -601,38 +601,60 @@ pub(crate) fn bytes_to_f32_mono(
     channels: usize,
     bytes_per_frame: usize,
 ) -> Vec<f32> {
-    if channels == 0 || bytes_per_frame == 0 {
+    if channels == 0 || bytes_per_frame == 0 || bytes_per_frame % channels != 0 {
         return Vec::new();
     }
 
-    // Guard: total_frames is bounded by both slice length and frame size.
     let total_frames = raw.len() / bytes_per_frame;
     let bytes_per_channel = bytes_per_frame / channels;
 
-    // We only handle f32 (4-byte) samples.  If bytes_per_channel != 4,
-    // return silence so we don't produce garbage — the error will be visible
-    // in the audio output but won't crash.
-    if bytes_per_channel != std::mem::size_of::<f32>() {
+    // WASAPI endpoints commonly expose IEEE f32, but some drivers use signed
+    // 16-bit or packed 24-bit PCM. Returning silence for those formats made a
+    // working microphone look like a VAD/transcription failure.
+    if !matches!(bytes_per_channel, 2 | 3 | 4) {
         warn!(
             bytes_per_channel,
-            "Unexpected bytes per channel; expected 4 (f32). Returning silence."
+            "Unsupported WASAPI sample width; returning silence"
         );
         return vec![0.0f32; total_frames];
     }
 
     let mut mono = Vec::with_capacity(total_frames);
-
     for frame_idx in 0..total_frames {
         let frame_start = frame_idx * bytes_per_frame;
         let mut sum = 0.0f32;
 
         for ch in 0..channels {
-            let byte_offset = frame_start + ch * bytes_per_channel;
-            // Safety: bounds checked above.
-            let bytes: [u8; 4] = raw[byte_offset..byte_offset + 4]
-                .try_into()
-                .unwrap_or([0u8; 4]);
-            sum += f32::from_le_bytes(bytes);
+            let offset = frame_start + ch * bytes_per_channel;
+            let sample = match bytes_per_channel {
+                2 => {
+                    let bytes: [u8; 2] = raw[offset..offset + 2]
+                        .try_into()
+                        .unwrap_or([0u8; 2]);
+                    i16::from_le_bytes(bytes) as f32 / 32768.0
+                }
+                3 => {
+                    let b0 = raw[offset] as i32;
+                    let b1 = raw[offset + 1] as i32;
+                    let b2 = raw[offset + 2] as i32;
+                    let packed = b0 | (b1 << 8) | (b2 << 16);
+                    let signed = if (packed & 0x0080_0000) != 0 {
+                        packed | !0x00FF_FFFF
+                    } else {
+                        packed
+                    };
+                    signed as f32 / 8_388_608.0
+                }
+                4 => {
+                    let bytes: [u8; 4] = raw[offset..offset + 4]
+                        .try_into()
+                        .unwrap_or([0u8; 4]);
+                    let value = f32::from_le_bytes(bytes);
+                    if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 }
+                }
+                _ => unreachable!(),
+            };
+            sum += sample;
         }
 
         mono.push(sum / channels as f32);
