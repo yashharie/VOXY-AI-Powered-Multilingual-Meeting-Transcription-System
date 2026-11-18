@@ -260,11 +260,27 @@ impl WhisperEngine {
                     .unwrap_or(2)
             });
 
+        // Keep decoding cost configurable for CPU-only Windows devices.
+        // A moderate beam/best-of setting balances speed and recognition quality.
+        let beam_size = std::env::var("VOXY_WHISPER_BEAM_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=5).contains(value))
+            .unwrap_or(3);
+
+        let best_of = std::env::var("VOXY_WHISPER_BEST_OF")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=5).contains(value))
+            .unwrap_or(3);
+
         let mut cmd = std::process::Command::new(cli);
         cmd.arg("-m").arg(&self.model_path)
             .arg("-f").arg(&temp_wav)
             .arg("-l").arg(lang)
             .arg("-t").arg(thread_count.to_string())
+            .arg("-bs").arg(beam_size.to_string())
+            .arg("-bo").arg(best_of.to_string())
             .arg("-oj")
             .arg("-of").arg(&json_prefix);
         // Do not pass textual "false" after boolean switches. whisper.cpp
