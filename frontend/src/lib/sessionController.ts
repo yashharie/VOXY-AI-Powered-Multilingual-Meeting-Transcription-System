@@ -16,7 +16,8 @@
 
 import {
   sessionStatus,
-  selectedDeviceId,
+  selectedOutputDeviceId,
+  selectedMicrophoneDeviceId,
   errorMessage,
   sessionStartTime,
   segments,
@@ -60,14 +61,18 @@ export async function initSessionController(): Promise<void> {
   // Load audio device list
   const devices = await listAudioDevices();
   audioDevices.set(devices);
-  if (devices.length > 0) {
-    const current = get(selectedDeviceId);
-    const known = devices.find((d) => d.id === current);
-    if (!known) {
-      selectedDeviceId.set(
-        devices.find((d) => d.is_default)?.id ?? devices[0].id,
-      );
-    }
+  const outputDevices = devices.filter((device) => device.kind === 'output');
+  const inputDevices = devices.filter((device) => device.kind === 'input');
+
+  if (!outputDevices.some((device) => device.id === get(selectedOutputDeviceId))) {
+    selectedOutputDeviceId.set(
+      outputDevices.find((device) => device.is_default)?.id ?? 'default-output',
+    );
+  }
+  if (!inputDevices.some((device) => device.id === get(selectedMicrophoneDeviceId))) {
+    selectedMicrophoneDeviceId.set(
+      inputDevices.find((device) => device.is_default)?.id ?? 'default-input',
+    );
   }
 
   // Keep device list fresh when hardware changes
@@ -94,7 +99,7 @@ export async function initSessionController(): Promise<void> {
 
 // ── Session commands ──────────────────────────────────────────────────────────
 
-export async function handleStart(deviceId: string): Promise<void> {
+export async function handleStart(outputDeviceId: string, microphoneDeviceId: string): Promise<void> {
   errorMessage.set(null);
   const previousSegments = get(segments);
   sessionStatus.set('starting');
@@ -122,7 +127,8 @@ export async function handleStart(deviceId: string): Promise<void> {
         allowed_languages: languages,
         enable_diarization: false,
         show_partial_results: true,
-        loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
+        loopback_device_id: outputDeviceId !== 'default-output' ? outputDeviceId : undefined,
+        microphone_device_id: microphoneDeviceId !== 'default-input' ? microphoneDeviceId : undefined,
       });
       _sessionId = sessionInfo.session_id;
 
