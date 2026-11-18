@@ -84,11 +84,10 @@ impl Resampler {
             return Ok(samples.to_vec());
         }
 
-        for (frame_idx, frame) in samples.chunks_exact(channel_count).enumerate() {
+        for frame in samples.chunks_exact(channel_count) {
             for (channel, sample) in frame.iter().enumerate() {
                 self.input_carry[channel].push(*sample);
             }
-            let _ = frame_idx;
         }
 
         let Some(resampler) = &mut self.resampler else {
