@@ -81,6 +81,15 @@ export async function initSessionController(): Promise<void> {
   // Listen for backend session-state events
   _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
     sessionStatus.set(status);
+    if (status === 'stopped') {
+      _stopMockTimer();
+      _unlistenTranscript?.();
+      _unlistenTranscript = null;
+      _unlistenError?.();
+      _unlistenError = null;
+      sessionStartTime.set(null);
+      _sessionId = null;
+    }
   });
 }
 
@@ -217,7 +226,13 @@ export async function handleStop(): Promise<void> {
 
   try {
     if (isTauri() && _sessionId) {
-      await stopSession(_sessionId);
+      const info = await stopSession(_sessionId);
+      // Native Stop returns once capture has stopped. Keep transcript listeners
+      // active until the background Whisper queue emits the final Stopped state.
+      if (info.state === 'Stopping') {
+        if (get(sessionStatus) !== 'stopped') sessionStatus.set('stopping');
+        return;
+      }
     }
     _stopMockTimer();
     _unlistenTranscript?.();
