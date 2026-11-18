@@ -449,6 +449,24 @@ impl Pipeline {
                 }
             } // end while recv
 
+            // Flush the small input remainder held by each streaming resampler.
+            // Keep it with the current speech window if a turn was still open.
+            for state in [&mut lb_state, &mut mic_state] {
+                match state.processor.flush() {
+                    Ok(tail) if !tail.is_empty() && state.in_speech => {
+                        state.buffer.extend(tail);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            source = state.source_name,
+                            "Final resampler flush failed"
+                        );
+                    }
+                }
+            }
+
             // Close open VAD segments before flushing the remaining audio buffers.
             let _ = lb_state.vad.finish();
             let _ = mic_state.vad.finish();
