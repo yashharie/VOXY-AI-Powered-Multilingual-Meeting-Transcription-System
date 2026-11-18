@@ -129,21 +129,12 @@ export async function handleStart(deviceId: string): Promise<void> {
       // 2. Subscribe BEFORE starting the native pipeline. Whisper can finish
       //    its first window quickly enough that subscribing afterwards loses it.
       _unlistenTranscript = await onTranscriptSegment((segment: TranscriptSegment) => {
-        const tgt = get(targetLanguage);
-        if (tgt && tgt !== 'auto' && segment.language !== tgt) {
-          // Keep the original recognized text. Output-language selection does
-          // not trigger translation; the language tag reflects the speech.
-        }
         if (segment.is_partial) {
           upsertSegment(segment);
         } else {
-          // A finalized segment supersedes the temporary live preview. Partial
-          // events currently share a provisional ID, so remove provisional rows
-          // rather than relying on an ID match that may not exist.
-          segments.update(all => {
-            const withoutPartials = all.filter(s => !s.is_partial);
-            return [...withoutPartials, segment];
-          });
+          // Keep previously recognized windows. The native pipeline commits each
+          // completed window and deduplicates its overlap before emitting it.
+          segments.update(all => [...all, segment]);
         }
       });
 
