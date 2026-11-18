@@ -124,9 +124,12 @@ export async function handleStart(deviceId: string): Promise<void> {
         if (segment.is_partial) {
           upsertSegment(segment);
         } else {
+          // A finalized segment supersedes the temporary live preview. Partial
+          // events currently share a provisional ID, so remove provisional rows
+          // rather than relying on an ID match that may not exist.
           segments.update(all => {
-            const withoutPartial = all.filter(s => !(s.is_partial && s.id === segment.id));
-            return [...withoutPartial, segment];
+            const withoutPartials = all.filter(s => !s.is_partial);
+            return [...withoutPartials, segment];
           });
         }
       });
