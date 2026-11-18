@@ -335,7 +335,7 @@ impl Pipeline {
                 } else {
                     &mut mic_state
                 };
-                let source_offset_ms = *state
+                let _source_offset_ms = *state
                     .timeline_offset_ms
                     .get_or_insert(chunk_session_start_ms);
 
