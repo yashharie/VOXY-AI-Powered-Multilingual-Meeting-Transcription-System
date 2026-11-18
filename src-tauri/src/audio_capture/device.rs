@@ -21,7 +21,7 @@ pub enum AudioDeviceKind {
 }
 
 /// A discovered audio endpoint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDevice {
     /// Opaque Windows endpoint ID string. Pass this to
     /// [`DeviceSelection::ById`](crate::audio_capture::config::DeviceSelection::ById)
