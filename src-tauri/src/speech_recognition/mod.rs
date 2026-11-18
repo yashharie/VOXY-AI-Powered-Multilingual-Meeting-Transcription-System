@@ -231,14 +231,27 @@ impl WhisperEngine {
             language_hint
         };
 
+        // Keep CPU usage predictable on the target CPU-only Windows machines.
+        // Override with VOXY_WHISPER_THREADS when benchmarking a specific device.
+        let thread_count = std::env::var("VOXY_WHISPER_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=32).contains(value))
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|count| count.get().saturating_sub(1).clamp(1, 4))
+                    .unwrap_or(2)
+            });
+
         let mut cmd = std::process::Command::new(cli);
         cmd.arg("-m").arg(&self.model_path)
             .arg("-f").arg(&temp_wav)
             .arg("-l").arg(lang)
+            .arg("-t").arg(thread_count.to_string())
             .arg("-oj")
             .arg("-of").arg(&json_prefix)
-            .arg("-nt").arg("false")
-            .arg("-tr").arg("false") // Preserve original spoken language — never translate
+            // Do not pass textual "false" after boolean flags. whisper.cpp treats
+            // -nt and -tr as switches; omitting them preserves timestamps and source language.
             .arg("--print-special").arg("false");
 
         let output = match cmd.output() {
