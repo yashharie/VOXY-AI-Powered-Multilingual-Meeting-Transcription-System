@@ -379,7 +379,7 @@ impl Pipeline {
 
                 // Transcription trigger:
                 //   A) natural pause ≥ 450 ms after at least 0.5 s of speech
-                //   B) buffer ≥ 8 s regardless of pauses (bounds memory / latency)
+                //   B) buffer ≥ 5 s regardless of pauses (bounds memory / latency)
                 let min_speech_samples = 16_000 / 2; // 0.5 s
                 let should_transcribe =
                     (state.in_speech
