@@ -6,8 +6,7 @@
     errorMessage,
     meetingPlatform,
     sessionName,
-    targetLanguage,
-    spokenLanguage,
+    selectedLanguages,
   } from '../lib/sessionStore';
   import {
     handleStart,
@@ -17,18 +16,11 @@
   } from '../lib/sessionController';
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
-  const TARGET_LANGUAGES = [
+  const LANGUAGE_OPTIONS = [
     { code: 'ta', label: 'Tamil (தமிழ்)' },
-    { code: 'en', label: 'English' },
     { code: 'si', label: 'Sinhala (සිංහල)' },
-    { code: 'auto', label: 'Original (As Spoken)' },
-  ];
-  const SPOKEN_LANGUAGES = [
-    { code: 'auto', label: 'Auto-Detect (Multilingual)' },
-    { code: 'ta', label: 'Tamil (தமிழ்)' },
     { code: 'en', label: 'English' },
-    { code: 'si', label: 'Sinhala (සිංහල)' },
-  ];
+  ] as const;
 
   $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
   $: isActive = $sessionStatus === 'active';
@@ -87,33 +79,28 @@
   </div>
 
   <div class="field-row">
-    <label for="target-lang-select" class="field-label">Transcribe to (Output)</label>
-    <select
-      id="target-lang-select"
-      class="field-select"
-      bind:value={$targetLanguage}
-      disabled={!isIdle}
-      aria-label="Select output language for transcript"
-    >
-      {#each TARGET_LANGUAGES as lang}
-        <option value={lang.code}>{lang.label}</option>
+    <span class="field-label">Languages to transcribe</span>
+    <div class="language-options" role="group" aria-label="Languages to transcribe">
+      {#each LANGUAGE_OPTIONS as lang}
+        <label class="language-option">
+          <input
+            type="checkbox"
+            checked={$selectedLanguages.includes(lang.code)}
+            disabled={!isIdle}
+            on:change={(event) => {
+              const checked = (event.currentTarget as HTMLInputElement).checked;
+              selectedLanguages.update((current) =>
+                checked
+                  ? (current.includes(lang.code) ? current : [...current, lang.code])
+                  : current.filter((code) => code !== lang.code)
+              );
+            }}
+          />
+          <span>{lang.label}</span>
+        </label>
       {/each}
-    </select>
-  </div>
-
-  <div class="field-row">
-    <label for="spoken-lang-select" class="field-label">Spoken language (Input)</label>
-    <select
-      id="spoken-lang-select"
-      class="field-select"
-      bind:value={$spokenLanguage}
-      disabled={!isIdle}
-      aria-label="Select spoken language or auto-detect"
-    >
-      {#each SPOKEN_LANGUAGES as lang}
-        <option value={lang.code}>{lang.label}</option>
-      {/each}
-    </select>
+    </div>
+    <p class="field-help">Select every language that may be spoken. VOXY keeps the original spoken text.</p>
   </div>
 
   <div class="divider"></div>
@@ -123,7 +110,7 @@
     <button
       class="btn btn-start"
       on:click={() => handleStart($selectedDeviceId)}
-      disabled={!isIdle || isBusy}
+      disabled={!isIdle || isBusy || $selectedLanguages.length === 0}
       aria-label="Start transcription session"
     >▶ Start</button>
 
@@ -205,6 +192,30 @@
     border-radius: 6px;
     font-size: 0.85rem;
     cursor: pointer;
+  }
+
+  .language-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem 0.9rem;
+  }
+
+  .language-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.82rem;
+    color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .language-option input { accent-color: var(--color-primary); }
+
+  .field-help {
+    margin: 0;
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    line-height: 1.4;
   }
 
   .field-input::placeholder { color: var(--color-text-muted); }
