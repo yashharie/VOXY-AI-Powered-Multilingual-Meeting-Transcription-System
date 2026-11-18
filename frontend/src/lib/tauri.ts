@@ -66,8 +66,8 @@ function unwrap<T>(result: any): T {
 export interface SessionConfig {
   audio_source: 'Loopback' | 'Microphone' | 'Both';
   language_hint: string;
+  allowed_languages: string[];
   enable_diarization: boolean;
-  show_partial_results: boolean;
   microphone_device_id?: string;
   loopback_device_id?: string;
 }
@@ -125,19 +125,29 @@ export async function stopSession(sessionId: string): Promise<SessionInfo> {
 export async function listAudioDevices(): Promise<AudioDevice[]> {
   // Static fallback — always shown so dropdown is never empty
   const fallback: AudioDevice[] = [
-    { id: 'default',       name: 'Default Microphone (System)',           is_default: true  },
-    { id: 'dev-mic',       name: 'Microphone (Voice Input)',              is_default: false },
-    { id: 'dev-speakers',  name: 'Speakers / Headset (Meeting Audio)',    is_default: false },
-    { id: 'dev-stereomix', name: 'Stereo Mix (System Loopback)',          is_default: false },
+    { id: 'default-output', name: 'Default system output', is_default: true, kind: 'output' },
+    { id: 'default-input', name: 'Default microphone', is_default: true, kind: 'input' },
   ];
+
+  // In the desktop app, use native WASAPI endpoint IDs. Browser MediaDeviceInfo
+  // IDs are opaque WebView identifiers and cannot be passed to the Rust WASAPI layer.
+  if (isTauri()) {
+    try {
+      const nativeResult = await invoke<IpcResult<AudioDevice[]>>('list_audio_devices');
+      const nativeDevices = unwrap<AudioDevice[]>(nativeResult);
+      return nativeDevices.length > 0 ? nativeDevices : fallback;
+    } catch (err) {
+      console.warn('Native WASAPI device enumeration failed:', err);
+      return fallback;
+    }
+  }
 
   if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
     return fallback;
   }
 
   try {
-    // Request permission first — this triggers the OS mic permission dialog in Tauri/WebView2
-    // and also causes enumerateDevices() to return real hardware labels.
+    // Browser-only development fallback. These IDs are not used by the native WASAPI backend.
     let stream: MediaStream | null = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -155,8 +165,10 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
 
     const result: AudioDevice[] = [];
 
-    // Default / communications device first
-    result.push({ id: 'default', name: 'Default Microphone (System)', is_default: true });
+    // Keep input and output defaults separate so a microphone ID is never
+    // accidentally passed to the WASAPI loopback endpoint.
+    result.push({ id: 'default-output', name: 'Default system output', is_default: true, kind: 'output' });
+    result.push({ id: 'default-input', name: 'Default microphone', is_default: true, kind: 'input' });
 
     devs.forEach((d, i) => {
       if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
@@ -166,12 +178,14 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
           id: d.deviceId,
           name: d.label || `Microphone ${i + 1}`,
           is_default: false,
+          kind: 'input',
         });
       } else if (d.kind === 'audiooutput') {
         result.push({
           id: d.deviceId,
-          name: d.label ? `Output: ${d.label}` : `Speaker ${i + 1}`,
+          name: d.label || `Speaker ${i + 1}`,
           is_default: false,
+          kind: 'output',
         });
       }
     });
@@ -201,7 +215,7 @@ export async function onTranscriptSegment(
         end_time: typeof seg.end_time === 'number' ? seg.end_time : 0,
         // speaker is Option<String> from Rust — may be null
         speaker: (seg.speaker as string) || null,
-        language: (seg.language as 'si' | 'ta' | 'en' | 'und') || 'und',
+        language: (seg.language as 'si' | 'ta' | 'en' | 'mul' | 'und') || 'und',
         is_partial: Boolean(seg.is_partial),
       };
       callback(normalized);

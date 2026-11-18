@@ -25,6 +25,18 @@ pub struct Resampler {
     output_sample_rate: u32,
     channels: usize,
     resampler: Option<SincFixedIn<f32>>,
+    /// Per-channel input waiting until a complete fixed-size Rubato chunk is available.
+    input_carry: Vec<Vec<f32>>,
+    /// Total source frames accepted by this resampler instance.
+    total_input_frames: usize,
+    /// Total frames produced by Rubato before startup-delay compensation.
+    raw_output_frames: usize,
+    /// Initial filter delay reported by Rubato, in output frames.
+    startup_delay_frames: usize,
+    /// Initial delay still waiting to be discarded from output.
+    startup_delay_remaining: usize,
+    /// Output frames already returned to the caller after delay compensation.
+    output_frames_emitted: usize,
 }
 
 impl Resampler {
@@ -54,101 +66,168 @@ impl Resampler {
         )
         .map_err(|_| ResamplingError::UnsupportedRatio)?;
 
+        let startup_delay_frames = resampler.output_delay();
+
         Ok(Self {
             input_sample_rate,
             output_sample_rate,
             channels,
             resampler: Some(resampler),
+            input_carry: vec![Vec::new(); channels],
+            total_input_frames: 0,
+            raw_output_frames: 0,
+            startup_delay_frames,
+            startup_delay_remaining: startup_delay_frames,
+            output_frames_emitted: 0,
         })
     }
 
-    fn linear_resample(
-        samples: &[f32],
-        input_sample_rate: u32,
-        output_sample_rate: u32,
-        channels: usize,
-    ) -> Vec<f32> {
-        if samples.is_empty() || input_sample_rate == 0 || output_sample_rate == 0 || channels == 0
-        {
-            return samples.to_vec();
-        }
-        if input_sample_rate == output_sample_rate {
-            return samples.to_vec();
-        }
-
-        let input_frames = samples.len().div_ceil(channels);
-        let output_frames = ((input_frames as f64 * output_sample_rate as f64
-            / input_sample_rate as f64)
-            .ceil() as usize)
-            .max(1);
-        let mut output = vec![0.0; output_frames * channels];
-
-        for channel in 0..channels {
-            for output_frame in 0..output_frames {
-                let position =
-                    output_frame as f64 * input_sample_rate as f64 / output_sample_rate as f64;
-                let left_index = position.floor() as usize;
-                let right_index = (left_index + 1).min(input_frames.saturating_sub(1));
-                let left_sample = samples
-                    .get(channel + left_index * channels)
-                    .copied()
-                    .unwrap_or(0.0);
-                let right_sample = samples
-                    .get(channel + right_index * channels)
-                    .copied()
-                    .unwrap_or(left_sample);
-                let fraction = position - left_index as f64;
-                let value = left_sample + (right_sample - left_sample) * fraction as f32;
-                output[output_frame * channels + channel] = value;
-            }
-        }
-
-        output
-    }
-
+    /// Feed arbitrary interleaved input blocks into the fixed-input Rubato
+    /// resampler. WASAPI blocks (typically 4,800 frames) are larger than the
+    /// 2,048-frame resampler chunk, so retain the remainder and process only
+    /// complete chunks. Padding every capture callback with process_partial()
+    /// would insert silence and distort the audio timeline.
     pub fn process(&mut self, samples: &[f32]) -> Result<Vec<f32>, ResamplingError> {
         if samples.is_empty() {
             return Ok(Vec::new());
         }
 
         let channel_count = self.channels.max(1);
-        let frames = samples.len().div_ceil(channel_count);
-        if frames < 32 {
-            return Ok(Self::linear_resample(
-                samples,
-                self.input_sample_rate(),
-                self.output_sample_rate,
-                channel_count,
-            ));
+        if samples.len() % channel_count != 0 {
+            return Err(ResamplingError::InvalidConfiguration);
         }
 
-        let channel_data = if channel_count == 1 {
-            vec![samples.to_vec()]
-        } else {
-            let mut channels = vec![Vec::with_capacity(frames); channel_count];
-            for frame_idx in 0..frames {
-                for chan in 0..channel_count {
-                    let sample_idx = frame_idx * channel_count + chan;
-                    if let Some(sample) = samples.get(sample_idx) {
-                        channels[chan].push(*sample);
+        if self.input_sample_rate == self.output_sample_rate {
+            return Ok(samples.to_vec());
+        }
+
+        self.total_input_frames += samples.len() / channel_count;
+
+        for frame in samples.chunks_exact(channel_count) {
+            for (channel, sample) in frame.iter().enumerate() {
+                self.input_carry[channel].push(*sample);
+            }
+        }
+
+        let Some(resampler) = &mut self.resampler else {
+            return Ok(samples.to_vec());
+        };
+
+        let mut interleaved_output = Vec::new();
+        let chunk_frames = resampler.input_frames_next();
+
+        while self.input_carry[0].len() >= chunk_frames {
+            let mut input_chunk = Vec::with_capacity(channel_count);
+            for channel in 0..channel_count {
+                let chunk = self.input_carry[channel]
+                    .drain(..chunk_frames)
+                    .collect::<Vec<f32>>();
+                input_chunk.push(chunk);
+            }
+
+            let output = resampler
+                .process(&input_chunk, None)
+                .map_err(|_| ResamplingError::ProcessingFailed)?;
+            let output_frames = output.first().map_or(0, Vec::len);
+            self.raw_output_frames += output_frames;
+
+            // Rubato's sinc filter has a startup delay. Discard it once per
+            // stream so transcript timestamps remain aligned with captured audio.
+            let frames_to_trim = self.startup_delay_remaining.min(output_frames);
+            self.startup_delay_remaining -= frames_to_trim;
+
+            // Rubato returns one Vec per channel. Convert back to interleaved
+            // samples because the rest of VOXY's audio pipeline uses interleaved PCM.
+            for frame_idx in frames_to_trim..output_frames {
+                for channel in 0..channel_count {
+                    if let Some(sample) = output.get(channel).and_then(|data| data.get(frame_idx)) {
+                        interleaved_output.push(*sample);
                     }
                 }
             }
-            channels
+        }
+
+        self.output_frames_emitted += interleaved_output.len() / channel_count;
+        Ok(interleaved_output)
+    }
+
+    /// Process the final input remainder and drain the sinc filter's delayed tail.
+    /// Rubato documents that a complete clip needs output_delay() extra frames,
+    /// after which the initial delay is removed to recover the original timeline.
+    pub fn flush(&mut self) -> Result<Vec<f32>, ResamplingError> {
+        if self.input_sample_rate == self.output_sample_rate {
+            return Ok(Vec::new());
+        }
+
+        let Some(resampler) = &mut self.resampler else {
+            return Ok(Vec::new());
         };
 
-        if let Some(resampler) = &mut self.resampler {
+        let remaining_frames = self.input_carry.first().map_or(0, Vec::len);
+        let mut interleaved_output = Vec::new();
+
+        if remaining_frames > 0 {
+            let input = std::mem::replace(
+                &mut self.input_carry,
+                vec![Vec::new(); self.channels],
+            );
             let output = resampler
-                .process_partial(Some(&channel_data), None)
+                .process_partial(Some(&input), None)
                 .map_err(|_| ResamplingError::ProcessingFailed)?;
-            let mut flattened = Vec::new();
-            for channel in &output {
-                flattened.extend_from_slice(channel);
+            let output_frames = output.first().map_or(0, Vec::len);
+            self.raw_output_frames += output_frames;
+
+            for frame_idx in 0..output_frames {
+                for channel in 0..self.channels {
+                    if let Some(sample) = output.get(channel).and_then(|data| data.get(frame_idx)) {
+                        interleaved_output.push(*sample);
+                    }
+                }
             }
-            Ok(flattened)
-        } else {
-            Ok(samples.to_vec())
         }
+
+        let ratio = self.output_sample_rate as f64 / self.input_sample_rate as f64;
+        let expected_frames = (self.total_input_frames as f64 * ratio).ceil() as usize;
+        let required_raw_frames = expected_frames + self.startup_delay_frames;
+
+        // The sinc filter may still hold valid tail samples after the last
+        // source frame. Feed zero-length partial chunks until that delayed tail
+        // has been emitted; cap the returned result to the exact resampled length.
+        while self.raw_output_frames < required_raw_frames {
+            let output = resampler
+                .process_partial::<&[f32]>(None, None)
+                .map_err(|_| ResamplingError::ProcessingFailed)?;
+            let output_frames = output.first().map_or(0, Vec::len);
+            if output_frames == 0 {
+                break;
+            }
+            self.raw_output_frames += output_frames;
+
+            for frame_idx in 0..output_frames {
+                for channel in 0..self.channels {
+                    if let Some(sample) = output.get(channel).and_then(|data| data.get(frame_idx)) {
+                        interleaved_output.push(*sample);
+                    }
+                }
+            }
+        }
+
+        let channel_count = self.channels.max(1);
+        let frames_to_trim = self.startup_delay_remaining.min(
+            interleaved_output.len() / channel_count,
+        );
+        if frames_to_trim > 0 {
+            interleaved_output.drain(..frames_to_trim * channel_count);
+            self.startup_delay_remaining -= frames_to_trim;
+        }
+
+        let frames_needed = expected_frames.saturating_sub(self.output_frames_emitted);
+        interleaved_output.truncate(
+            interleaved_output.len().min(frames_needed * channel_count),
+        );
+        self.output_frames_emitted += interleaved_output.len() / channel_count;
+
+        Ok(interleaved_output)
     }
 
     pub fn input_sample_rate(&self) -> u32 {
@@ -184,9 +263,15 @@ impl Resampler {
             mono
         };
 
-        let output = self
+        let mut output = self
             .process(&input_samples)
             .map_err(|_| AudioValidationError::InvalidSampleRate)?;
+        if frame.is_last {
+            output.extend(
+                self.flush()
+                    .map_err(|_| AudioValidationError::InvalidSampleRate)?,
+            );
+        }
         Ok(AudioFrame::new(
             self.output_sample_rate,
             self.channels as u16,
@@ -211,7 +296,9 @@ pub fn resample_pcm(
         return Err(ResamplingError::InvalidConfiguration);
     }
     let mut resampler = Resampler::new(input_sample_rate, output_sample_rate, channels)?;
-    resampler.process(samples)
+    let mut output = resampler.process(samples)?;
+    output.extend(resampler.flush()?);
+    Ok(output)
 }
 
 pub fn resample_audio(
@@ -233,9 +320,13 @@ pub fn resample_frame(
     }
     let mut resampler = Resampler::new(frame.sample_rate, target_sample_rate, target_channels)
         .map_err(|_| AudioValidationError::InvalidSampleRate)?;
-    let output = resampler
-        .process(&frame.samples)
-        .map_err(|_| AudioValidationError::InvalidSampleRate)?;
+    let processed = resampler.process_frame(frame)?;
+    let mut output = processed.samples;
+    output.extend(
+        resampler
+            .flush()
+            .map_err(|_| AudioValidationError::InvalidSampleRate)?,
+    );
     Ok(AudioFrame::new(
         target_sample_rate,
         target_channels as u16,
@@ -244,4 +335,43 @@ pub fn resample_frame(
         frame.frame_index,
         frame.is_last,
     ))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::Resampler;
+
+    #[test]
+    fn buffers_capture_blocks_larger_than_rubato_fixed_chunk() {
+        let mut resampler = Resampler::new(48_000, 16_000, 1).unwrap();
+        let input = vec![0.25f32; 4_800];
+
+        let mut output = resampler.process(&input).unwrap();
+        assert!(!output.is_empty(), "complete 2,048-frame chunks should be processed");
+        assert_eq!(
+            resampler.input_carry[0].len(),
+            704,
+            "the unprocessed remainder must be retained for the next capture block"
+        );
+
+        output.extend(resampler.flush().unwrap());
+        assert!(
+            (output.len() as isize - 1_600).abs() <= 8,
+            "4,800 frames at 48 kHz should produce about 1,600 frames at 16 kHz, got {}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn combines_small_capture_blocks_until_a_full_resampler_chunk_exists() {
+        let mut resampler = Resampler::new(48_000, 16_000, 1).unwrap();
+
+        let first = resampler.process(&vec![0.1f32; 1_000]).unwrap();
+        assert!(first.is_empty(), "a partial input block must be buffered, not padded");
+
+        let second = resampler.process(&vec![0.1f32; 1_048]).unwrap();
+        assert!(!second.is_empty(), "the completed fixed-size chunk should now be processed");
+        assert!(resampler.input_carry[0].is_empty());
+    }
 }

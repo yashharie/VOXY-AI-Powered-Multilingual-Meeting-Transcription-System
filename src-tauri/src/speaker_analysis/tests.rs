@@ -19,9 +19,16 @@ impl SpeakerEmbedder for FreqEmbedder {
         }
         // Ignore the near-silent tail the VAD keeps around a segment, then estimate frequency.
         let kept: Vec<f32> = s.iter().copied().filter(|x| x.abs() > 0.05).collect();
-        let zc = kept.windows(2).filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0)).count() as f32;
+        let zc = kept
+            .windows(2)
+            .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
+            .count() as f32;
         let freq = zc / 2.0 / (kept.len().max(1) as f32 / 16_000.0);
-        Ok(if freq < 300.0 { vec![1.0, 0.0] } else { vec![0.0, 1.0] })
+        Ok(if freq < 300.0 {
+            vec![1.0, 0.0]
+        } else {
+            vec![0.0, 1.0]
+        })
     }
 }
 
@@ -31,7 +38,9 @@ fn tone(freq: f32, ms: u64) -> Vec<f32> {
         .collect()
 }
 fn quiet(ms: u64) -> Vec<f32> {
-    (0..ms_to_samples(ms) as usize).map(|i| 0.001 * ((i * 7919 % 13) as f32 / 13.0 - 0.5)).collect()
+    (0..ms_to_samples(ms) as usize)
+        .map(|i| 0.001 * ((i * 7919 % 13) as f32 / 13.0 - 0.5))
+        .collect()
 }
 
 fn engines(fail: bool) -> (VadEngine, DiarizationEngine) {
@@ -69,8 +78,14 @@ fn turn_taking_produces_stable_labels_and_timestamps() {
 
     // Lookup as the pipeline does it for Whisper segments.
     assert_eq!(diar.assign_speaker(600, 2400).as_deref(), Some("Speaker 1"));
-    assert_eq!(diar.assign_speaker(3600, 5400).as_deref(), Some("Speaker 2"));
-    assert_eq!(diar.assign_speaker(6600, 7900).as_deref(), Some("Speaker 1"));
+    assert_eq!(
+        diar.assign_speaker(3600, 5400).as_deref(),
+        Some("Speaker 2")
+    );
+    assert_eq!(
+        diar.assign_speaker(6600, 7900).as_deref(),
+        Some("Speaker 1")
+    );
 
     assert_eq!(diar.drain_new_intervals().len(), 3);
     assert!(diar.drain_new_intervals().is_empty());
@@ -81,6 +96,52 @@ fn turn_taking_produces_stable_labels_and_timestamps() {
     assert_eq!(st.speakers, 2);
     assert!(st.audio_ms >= 9_000);
     assert!(st.real_time_factor() >= 0.0);
+}
+
+#[test]
+fn independent_source_vads_feed_one_session_diarizer_with_offsets() {
+    let (_, diar) = engines(false);
+    let lb_vad = VadEngine::with_backend(Box::new(EnergyVad::new(VadConfig::default())));
+    let mic_vad = VadEngine::with_backend(Box::new(EnergyVad::new(VadConfig::default())));
+
+    // Loopback source: first speech begins 300 ms into the session.
+    let mut loopback = quiet(300);
+    loopback.extend(tone(200.0, 1500));
+    loopback.extend(quiet(1000));
+    feed(&lb_vad, &loopback);
+    lb_vad.finish().unwrap();
+    for chunk in lb_vad.take_speech_chunks() {
+        diar.process_speech_chunk(chunk, 0);
+    }
+
+    // Microphone has an independent VAD clock but begins 2 seconds into the session.
+    let mut microphone = quiet(300);
+    microphone.extend(tone(400.0, 1500));
+    microphone.extend(quiet(1000));
+    feed(&mic_vad, &microphone);
+    mic_vad.finish().unwrap();
+    for chunk in mic_vad.take_speech_chunks() {
+        diar.process_speech_chunk(chunk, 2000);
+    }
+
+    let intervals = diar.intervals();
+    assert_eq!(intervals.len(), 2, "{intervals:?}");
+    assert_eq!(
+        intervals
+            .iter()
+            .map(|iv| iv.speaker.as_str())
+            .collect::<Vec<_>>(),
+        ["Speaker 1", "Speaker 2"],
+        "{intervals:?}"
+    );
+    assert!(
+        (intervals[0].start_ms as i64 - 300).abs() < 100,
+        "{intervals:?}"
+    );
+    assert!(
+        (intervals[1].start_ms as i64 - 2300).abs() < 100,
+        "{intervals:?}"
+    );
 }
 
 #[test]
@@ -98,7 +159,10 @@ fn silence_is_not_speech() {
 fn clones_share_state() {
     let (vad, diar) = engines(false);
     let vad2 = vad.clone();
-    feed(&vad2, &[quiet(300), tone(200.0, 1500), quiet(1000)].concat());
+    feed(
+        &vad2,
+        &[quiet(300), tone(200.0, 1500), quiet(1000)].concat(),
+    );
     assert_eq!(diar.speaker_count(), 1);
     assert_eq!(vad.stats().speech_segments, 1);
 }

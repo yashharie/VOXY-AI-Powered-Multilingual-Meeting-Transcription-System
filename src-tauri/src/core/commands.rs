@@ -8,9 +8,10 @@
 //!   serialised `IpcError { code, message }`.  The frontend's `unwrap()`
 //!   helper in ipc.ts parses this envelope.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
-use super::error::{AppResult, IpcResult};
+use crate::audio_capture::device::{AudioDevice, DeviceEnumerator};
+use super::error::{AppError, AppResult, IpcResult};
 use super::events;
 use super::state::AppState;
 use super::types::{AppVersion, SessionConfig, SessionInfo, TranscriptSegment};
@@ -32,6 +33,22 @@ pub fn get_app_version() -> AppVersion {
         tauri_version: "2".to_string(),
         build_target: std::env::consts::OS.to_string(),
     }
+}
+
+/// Enumerate real Windows playback and microphone endpoints. The returned IDs
+/// are WASAPI endpoint IDs and can be passed back into SessionConfig.
+#[tauri::command]
+pub fn list_audio_devices() -> IpcResult<Vec<AudioDevice>> {
+    let result: AppResult<Vec<AudioDevice>> = (|| {
+        let mut devices = DeviceEnumerator::list_output_devices()
+            .map_err(|error| AppError::Internal(format!("Output device enumeration failed: {error}")))?;
+        let inputs = DeviceEnumerator::list_input_devices()
+            .map_err(|error| AppError::Internal(format!("Input device enumeration failed: {error}")))?;
+        devices.extend(inputs);
+        Ok(devices)
+    })();
+
+    result.into()
 }
 
 // ─── Session lifecycle commands ───────────────────────────────────────────────
@@ -202,7 +219,7 @@ pub fn resume_session(
     result.into()
 }
 
-/// Stop a session: triggers cleanup and emits cleanup-done event.
+/// Stop recording immediately, then finalize queued transcription in the background.
 #[tauri::command]
 pub async fn stop_session(
     session_id: String,
@@ -210,29 +227,61 @@ pub async fn stop_session(
     state: State<'_, AppState>,
 ) -> Result<IpcResult<SessionInfo>, String> {
     tracing::info!(%session_id, "IPC: stop_session called");
-    let result: AppResult<SessionInfo> = (async {
+    let result: AppResult<SessionInfo> = (|| {
         let session = state.get_session(&session_id)?;
-        let prev = session.state();
+        let previous = session.state();
+        let stopping_info = session.begin_stop()?;
 
-        // Emit stopping state immediately so the UI can update.
         events::emit_session_state_changed(
             &app,
             &session_id,
-            prev,
+            previous,
             super::types::SessionState::Stopping,
             None,
         );
 
-        // Shut down the pipeline before stopping the session.
         if let Some(pipeline) = state.take_pipeline() {
-            pipeline.shutdown().await;
+            // Dropping the capture handle stops and joins the WASAPI capture
+            // threads. Queued Whisper jobs continue in order on this background
+            // task, so the Stop IPC command does not wait for CPU inference.
+            let worker = pipeline.stop_capture();
+            let app_for_finalize = app.clone();
+            let id_for_finalize = session_id.clone();
+
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = worker.await {
+                    tracing::error!(session_id = %id_for_finalize, error = %error, "Pipeline worker failed during stop finalization");
+                }
+
+                let managed_state = app_for_finalize.state::<AppState>();
+                match managed_state.stop_session(&id_for_finalize) {
+                    Ok(()) => {
+                        if let Ok(session) = managed_state.get_session(&id_for_finalize) {
+                            let info = session.info();
+                            events::emit_session_state_changed(
+                                &app_for_finalize,
+                                &id_for_finalize,
+                                super::types::SessionState::Stopping,
+                                info.state,
+                                None,
+                            );
+                            events::emit_session_cleanup_done(&app_for_finalize, &id_for_finalize);
+                            tracing::info!(session_id = %id_for_finalize, "Background session finalization completed");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(session_id = %id_for_finalize, error = %error, "Session finalization failed");
+                        events::emit_error(&app_for_finalize, Some(&id_for_finalize), &error);
+                    }
+                }
+            });
+
+            return Ok(stopping_info);
         }
 
-        // Run the full stop + cleanup flow.
+        // No pipeline exists (for example, startup failed before capture).
         state.stop_session(&session_id)?;
-
         let info = state.get_session(&session_id)?.info();
-
         events::emit_session_state_changed(
             &app,
             &session_id,
@@ -240,14 +289,12 @@ pub async fn stop_session(
             info.state.clone(),
             None,
         );
-
         events::emit_session_cleanup_done(&app, &session_id);
-
         Ok(info)
-    }).await;
+    })();
 
-    if let Err(ref e) = result {
-        events::emit_error(&app, Some(&session_id), e);
+    if let Err(ref error) = result {
+        events::emit_error(&app, Some(&session_id), error);
     }
 
     Ok(result.into())

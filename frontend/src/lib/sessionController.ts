@@ -4,7 +4,7 @@
  * This is the single source of truth for session lifecycle management.
  *
  * Live transcription path (inside Tauri desktop app):
- *   initSession() → startSession() → Rust pipeline starts:
+ *   initSession() → subscribe to native events → startSession() → Rust pipeline:
  *     WASAPI capture → preprocessing → VAD → Whisper → events
  *   Frontend listens on voxy://transcript-segment Tauri events.
  *
@@ -16,7 +16,8 @@
 
 import {
   sessionStatus,
-  selectedDeviceId,
+  selectedOutputDeviceId,
+  selectedMicrophoneDeviceId,
   errorMessage,
   sessionStartTime,
   segments,
@@ -24,7 +25,7 @@ import {
   upsertSegment,
   clearSession,
   audioDevices,
-  targetLanguage,
+  selectedLanguages,
 } from './sessionStore';
 import {
   initSession,
@@ -60,14 +61,18 @@ export async function initSessionController(): Promise<void> {
   // Load audio device list
   const devices = await listAudioDevices();
   audioDevices.set(devices);
-  if (devices.length > 0) {
-    const current = get(selectedDeviceId);
-    const known = devices.find((d) => d.id === current);
-    if (!known) {
-      selectedDeviceId.set(
-        devices.find((d) => d.is_default)?.id ?? devices[0].id,
-      );
-    }
+  const outputDevices = devices.filter((device) => device.kind === 'output');
+  const inputDevices = devices.filter((device) => device.kind === 'input');
+
+  if (!outputDevices.some((device) => device.id === get(selectedOutputDeviceId))) {
+    selectedOutputDeviceId.set(
+      outputDevices.find((device) => device.is_default)?.id ?? 'default-output',
+    );
+  }
+  if (!inputDevices.some((device) => device.id === get(selectedMicrophoneDeviceId))) {
+    selectedMicrophoneDeviceId.set(
+      inputDevices.find((device) => device.is_default)?.id ?? 'default-input',
+    );
   }
 
   // Keep device list fresh when hardware changes
@@ -80,12 +85,21 @@ export async function initSessionController(): Promise<void> {
   // Listen for backend session-state events
   _unlistenStatus = await onSessionStatusChange((status: SessionStatus) => {
     sessionStatus.set(status);
+    if (status === 'stopped') {
+      _stopMockTimer();
+      _unlistenTranscript?.();
+      _unlistenTranscript = null;
+      _unlistenError?.();
+      _unlistenError = null;
+      sessionStartTime.set(null);
+      _sessionId = null;
+    }
   });
 }
 
 // ── Session commands ──────────────────────────────────────────────────────────
 
-export async function handleStart(deviceId: string): Promise<void> {
+export async function handleStart(outputDeviceId: string, microphoneDeviceId: string): Promise<void> {
   errorMessage.set(null);
   const previousSegments = get(segments);
   sessionStatus.set('starting');
@@ -93,52 +107,66 @@ export async function handleStart(deviceId: string): Promise<void> {
   // ── Tauri desktop path ────────────────────────────────────────────────────
   if (isTauri()) {
     try {
-      // 1. Create the session on the Rust backend
+      // A single selected language can be passed directly to Whisper.
+      // Multiple selected languages use auto-detection and are validated
+      // per transcript segment by the native speech-recognition module.
+      const languages = get(selectedLanguages);
+      if (languages.length === 0) {
+        throw new Error('Select at least one language to transcribe.');
+      }
+      const languageHint = languages.length === 1 ? languages[0] : 'auto';
+
+      // Clear the previous session before starting so early native events
+      // cannot be erased by a later clearSession() call.
+      clearSession();
+
+      // 1. Create the session using the language selected for spoken audio.
       const sessionInfo = await initSession({
         audio_source: 'Both',          // loopback + microphone
-        language_hint: 'auto',         // Whisper auto-detects Tamil/Sinhala/English
+        language_hint: languageHint,
+        allowed_languages: languages,
         enable_diarization: false,
-        show_partial_results: true,
-        loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
+        loopback_device_id: outputDeviceId !== 'default-output' ? outputDeviceId : undefined,
+        microphone_device_id: microphoneDeviceId !== 'default-input' ? microphoneDeviceId : undefined,
       });
       _sessionId = sessionInfo.session_id;
 
-      // 2. Start the native pipeline — WASAPI capture → Whisper
-      await startSession(_sessionId);
-
-      // 3. Subscribe to transcript segments from the native pipeline
+      // 2. Subscribe BEFORE starting the native pipeline. Whisper can finish
+      //    its first window quickly enough that subscribing afterwards loses it.
       _unlistenTranscript = await onTranscriptSegment((segment: TranscriptSegment) => {
-        const tgt = get(targetLanguage);
-        if (tgt && tgt !== 'auto' && segment.language !== tgt) {
-          // If a specific output language is selected, still show the segment
-          // in its original language — translation is not done automatically.
-          // The segment is shown as-is; the language tag reflects the detected script.
-        }
         if (segment.is_partial) {
-          // Update or insert partial segment in-place
           upsertSegment(segment);
         } else {
-          // Remove any matching partial before appending the final
-          segments.update(all => {
-            const withoutPartial = all.filter(s => !(s.is_partial && s.id === segment.id));
-            return [...withoutPartial, segment];
-          });
+          // Keep previously recognized windows. The native pipeline commits each
+          // completed window and deduplicates its overlap before emitting it.
+          segments.update(all =>
+            [...all, segment].sort((a, b) =>
+              a.start_time - b.start_time || a.id.localeCompare(b.id)
+            )
+          );
         }
       });
 
-      // 4. Subscribe to backend error events
+      // Subscribe to errors before start_session for the same reason.
       _unlistenError = await onSessionError(({ code, message }) => {
         errorMessage.set(`[${code}] ${message}`);
       });
 
-      clearSession();
+      // 3. Start audio capture and transcription only after listeners are ready.
+      await startSession(_sessionId);
+
       resetMockSegments();
       sessionStatus.set('active');
       sessionStartTime.set(Date.now());
 
-      return; // Native path done — do not fall through to mock
+      return;
     } catch (err) {
-      // Native pipeline failed — show the error clearly, do not silently fall back
+      // Remove any listeners installed for a session that failed to start.
+      _unlistenTranscript?.();
+      _unlistenTranscript = null;
+      _unlistenError?.();
+      _unlistenError = null;
+
       const msg = String(err);
       errorMessage.set(
         msg.includes('model not found') || msg.includes('main.exe')
@@ -202,7 +230,13 @@ export async function handleStop(): Promise<void> {
 
   try {
     if (isTauri() && _sessionId) {
-      await stopSession(_sessionId);
+      const info = await stopSession(_sessionId);
+      // Native Stop returns once capture has stopped. Keep transcript listeners
+      // active until the background Whisper queue emits the final Stopped state.
+      if (info.state === 'Stopping') {
+        if (get(sessionStatus) !== 'stopped') sessionStatus.set('stopping');
+        return;
+      }
     }
     _stopMockTimer();
     _unlistenTranscript?.();

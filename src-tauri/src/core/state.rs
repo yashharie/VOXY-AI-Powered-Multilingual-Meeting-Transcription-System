@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use super::config::AppConfig;
 use super::error::{AppError, AppResult};
 use super::session::Session;
-use super::types::SessionConfig;
+use super::types::{SessionConfig, SessionState};
 use crate::core::pipeline::Pipeline;
 
 /// Application-wide shared state injected into Tauri commands.
@@ -97,8 +97,11 @@ impl AppState {
     pub fn stop_session(&self, id: &str) -> AppResult<()> {
         let session = self.get_session(id)?;
 
-        // Begin stop transition (Active/Paused → Stopping).
-        session.begin_stop()?;
+        // Stop may already have transitioned the session before background
+        // transcription finalization was scheduled.
+        if session.state() != SessionState::Stopping {
+            session.begin_stop()?;
+        }
 
         // --- Module teardown would be coordinated here ---
         // audio_capture::stop(), speech_recognition::stop(), etc.

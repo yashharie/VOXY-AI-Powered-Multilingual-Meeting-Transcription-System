@@ -1,13 +1,13 @@
 <script lang="ts">
   import {
     sessionStatus,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
     audioDevices,
     errorMessage,
     meetingPlatform,
     sessionName,
-    targetLanguage,
-    spokenLanguage,
+    selectedLanguages,
   } from '../lib/sessionStore';
   import {
     handleStart,
@@ -17,18 +17,11 @@
   } from '../lib/sessionController';
 
   const PLATFORMS = ['None', 'Google Meet', 'Zoom', 'Microsoft Teams', 'Other'];
-  const TARGET_LANGUAGES = [
+  const LANGUAGE_OPTIONS = [
     { code: 'ta', label: 'Tamil (தமிழ்)' },
-    { code: 'en', label: 'English' },
     { code: 'si', label: 'Sinhala (සිංහල)' },
-    { code: 'auto', label: 'Original (As Spoken)' },
-  ];
-  const SPOKEN_LANGUAGES = [
-    { code: 'auto', label: 'Auto-Detect (Multilingual)' },
-    { code: 'ta', label: 'Tamil (தமிழ்)' },
     { code: 'en', label: 'English' },
-    { code: 'si', label: 'Sinhala (සිංහල)' },
-  ];
+  ] as const;
 
   $: isIdle   = $sessionStatus === 'idle' || $sessionStatus === 'stopped';
   $: isActive = $sessionStatus === 'active';
@@ -70,15 +63,15 @@
   </div>
 
   <div class="field-row">
-    <label for="device-select" class="field-label">Audio device</label>
+    <label for="output-device-select" class="field-label">System audio output</label>
     <select
-      id="device-select"
+      id="output-device-select"
       class="field-select"
-      bind:value={$selectedDeviceId}
+      bind:value={$selectedOutputDeviceId}
       disabled={!isIdle}
-      aria-label="Select audio output device"
+      aria-label="Select system audio output for meeting capture"
     >
-      {#each $audioDevices as device (device.id)}
+      {#each $audioDevices.filter((device) => device.kind === 'output') as device (device.id)}
         <option value={device.id}>
           {device.name}{device.is_default ? ' (default)' : ''}
         </option>
@@ -87,33 +80,45 @@
   </div>
 
   <div class="field-row">
-    <label for="target-lang-select" class="field-label">Transcribe to (Output)</label>
+    <label for="microphone-device-select" class="field-label">Microphone input</label>
     <select
-      id="target-lang-select"
+      id="microphone-device-select"
       class="field-select"
-      bind:value={$targetLanguage}
+      bind:value={$selectedMicrophoneDeviceId}
       disabled={!isIdle}
-      aria-label="Select output language for transcript"
+      aria-label="Select microphone input for voice capture"
     >
-      {#each TARGET_LANGUAGES as lang}
-        <option value={lang.code}>{lang.label}</option>
+      {#each $audioDevices.filter((device) => device.kind === 'input') as device (device.id)}
+        <option value={device.id}>
+          {device.name}{device.is_default ? ' (default)' : ''}
+        </option>
       {/each}
     </select>
   </div>
 
   <div class="field-row">
-    <label for="spoken-lang-select" class="field-label">Spoken language (Input)</label>
-    <select
-      id="spoken-lang-select"
-      class="field-select"
-      bind:value={$spokenLanguage}
-      disabled={!isIdle}
-      aria-label="Select spoken language or auto-detect"
-    >
-      {#each SPOKEN_LANGUAGES as lang}
-        <option value={lang.code}>{lang.label}</option>
+    <span class="field-label">Languages to transcribe</span>
+    <div class="language-options" role="group" aria-label="Languages to transcribe">
+      {#each LANGUAGE_OPTIONS as lang}
+        <label class="language-option">
+          <input
+            type="checkbox"
+            checked={$selectedLanguages.includes(lang.code)}
+            disabled={!isIdle}
+            on:change={(event) => {
+              const checked = (event.currentTarget as HTMLInputElement).checked;
+              selectedLanguages.update((current) =>
+                checked
+                  ? (current.includes(lang.code) ? current : [...current, lang.code])
+                  : current.filter((code) => code !== lang.code)
+              );
+            }}
+          />
+          <span>{lang.label}</span>
+        </label>
       {/each}
-    </select>
+    </div>
+    <p class="field-help">Select every language that may be spoken. VOXY keeps the original spoken text.</p>
   </div>
 
   <div class="divider"></div>
@@ -122,8 +127,8 @@
   <div class="button-row">
     <button
       class="btn btn-start"
-      on:click={() => handleStart($selectedDeviceId)}
-      disabled={!isIdle || isBusy}
+      on:click={() => handleStart($selectedOutputDeviceId, $selectedMicrophoneDeviceId)}
+      disabled={!isIdle || isBusy || $selectedLanguages.length === 0}
       aria-label="Start transcription session"
     >▶ Start</button>
 
@@ -205,6 +210,30 @@
     border-radius: 6px;
     font-size: 0.85rem;
     cursor: pointer;
+  }
+
+  .language-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem 0.9rem;
+  }
+
+  .language-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.82rem;
+    color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .language-option input { accent-color: var(--color-primary); }
+
+  .field-help {
+    margin: 0;
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    line-height: 1.4;
   }
 
   .field-input::placeholder { color: var(--color-text-muted); }

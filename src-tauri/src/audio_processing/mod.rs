@@ -149,6 +149,15 @@ impl AudioPreprocessor {
         })
     }
 
+    pub fn flush_resampler(&mut self) -> Result<Vec<f32>, AudioValidationError> {
+        match &mut self.resampler {
+            Some(resampler) => resampler
+                .flush()
+                .map_err(|_| AudioValidationError::InvalidSampleRate),
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub fn flush(&mut self) -> Vec<f32> {
         self.buffer.drain_all()
     }
@@ -164,6 +173,15 @@ impl AudioProcessor {
         Self {
             preprocessor: Mutex::new(AudioPreprocessor::new(16_000, 1, 64_000)),
         }
+    }
+
+    pub fn flush(&self) -> AppResult<Vec<f32>> {
+        let mut preprocessor = self.preprocessor.lock().map_err(|error| {
+            AppError::Internal(format!("audio preprocessor lock poisoned: {error}"))
+        })?;
+        preprocessor.flush_resampler().map_err(|error| {
+            AppError::InvalidConfig(format!("audio resampler flush failed: {error:?}"))
+        })
     }
 
     pub fn process(&self, frame: CapturedAudioFrame) -> AppResult<ProcessedAudio> {

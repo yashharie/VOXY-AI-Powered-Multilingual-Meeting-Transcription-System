@@ -87,10 +87,12 @@ pub struct SessionConfig {
     /// Language hint for Whisper, e.g. "si", "ta", "en", "auto".
     #[serde(default = "default_language_hint")]
     pub language_hint: String,
+    /// Languages allowed in the transcript. Multiple selections use Whisper auto-detection
+    /// and per-segment script validation.
+    #[serde(default = "default_allowed_languages")]
+    pub allowed_languages: Vec<String>,
     #[serde(default)]
     pub enable_diarization: bool,
-    #[serde(default = "default_true")]
-    pub show_partial_results: bool,
     #[serde(default)]
     pub microphone_device_id: Option<String>,
     #[serde(default)]
@@ -105,8 +107,8 @@ fn default_language_hint() -> String {
     "auto".to_string()
 }
 
-fn default_true() -> bool {
-    true
+fn default_allowed_languages() -> Vec<String> {
+    vec!["ta".to_string(), "si".to_string(), "en".to_string()]
 }
 
 impl Default for SessionConfig {
@@ -114,8 +116,8 @@ impl Default for SessionConfig {
         Self {
             audio_source: AudioSource::Both,
             language_hint: "auto".to_string(),
+            allowed_languages: default_allowed_languages(),
             enable_diarization: false,
-            show_partial_results: true,
             microphone_device_id: None,
             loopback_device_id: None,
         }

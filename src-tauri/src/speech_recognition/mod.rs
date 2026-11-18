@@ -182,13 +182,30 @@ impl WhisperEngine {
         None
     }
 
-    /// Transcribe a window of 16kHz mono audio samples with accurate timestamps.
+    /// Transcribe using the default supported language set.
     pub fn transcribe_window(
         &self,
         samples: &[f32],
         sample_rate: u32,
         window_start_ms: u64,
         language_hint: &str,
+    ) -> AppResult<Vec<RecognitionResult>> {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        self.transcribe_window_with_languages(
+            samples, sample_rate, window_start_ms, language_hint, &allowed,
+        )
+    }
+
+    /// Transcribe and retain only text written in the selected supported scripts.
+    /// Whisper still detects one dominant language per window; script inspection
+    /// provides a best-effort language label for each returned text segment.
+    pub fn transcribe_window_with_languages(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+        window_start_ms: u64,
+        language_hint: &str,
+        allowed_languages: &[String],
     ) -> AppResult<Vec<RecognitionResult>> {
         if !self.is_loaded {
             return Err(AppError::Internal(format!(
@@ -231,15 +248,28 @@ impl WhisperEngine {
             language_hint
         };
 
+        // Keep CPU usage predictable on the target CPU-only Windows machines.
+        // Override with VOXY_WHISPER_THREADS when benchmarking a specific device.
+        let thread_count = std::env::var("VOXY_WHISPER_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=32).contains(value))
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|count| count.get().saturating_sub(1).clamp(1, 4))
+                    .unwrap_or(2)
+            });
+
         let mut cmd = std::process::Command::new(cli);
         cmd.arg("-m").arg(&self.model_path)
             .arg("-f").arg(&temp_wav)
             .arg("-l").arg(lang)
+            .arg("-t").arg(thread_count.to_string())
             .arg("-oj")
-            .arg("-of").arg(&json_prefix)
-            .arg("-nt").arg("false")
-            .arg("-tr").arg("false") // Preserve original spoken language — never translate
-            .arg("--print-special").arg("false");
+            .arg("-of").arg(&json_prefix);
+        // Do not pass textual "false" after boolean switches. whisper.cpp
+            // parses these as flags, not key/value options. Omitting -nt preserves
+            // segment timestamps; omitting -tr preserves the original spoken language.
 
         let output = match cmd.output() {
             Ok(out) => out,
@@ -275,6 +305,7 @@ impl WhisperEngine {
         // tag reflects whichever language was dominant in the window, which may not match
         // an individual segment. The limitation is documented in the struct field comment.
         let mut results = Vec::new();
+        let mut detected_window_language = lang.to_string();
         let mut json_parse_error: Option<String> = None;
 
         if json_file.is_file() {
@@ -291,6 +322,7 @@ impl WhisperEngine {
                                 .unwrap_or_else(|| {
                                     if lang == "auto" { "und".to_string() } else { lang.to_string() }
                                 });
+                            detected_window_language = window_lang.clone();
 
                             if let Some(segments) = parsed.transcription {
                                 for seg in segments {
@@ -357,6 +389,7 @@ impl WhisperEngine {
                 .unwrap_or_else(|| {
                     if lang == "auto" { "und".to_string() } else { lang.to_string() }
                 });
+            detected_window_language = fallback_lang.clone();
             results = parse_whisper_stdout(&stdout, &fallback_lang, window_start_ms);
 
             if results.is_empty() && stdout.trim().is_empty() {
@@ -367,6 +400,30 @@ impl WhisperEngine {
                 );
             }
         }
+
+        // whisper.cpp reports one dominant language for the whole audio window.
+        // Reclassify each returned segment from its Unicode scripts so Tamil,
+        // Sinhala, and English can coexist in the same window.
+        results.retain_mut(|result| {
+            match classify_segment_language(
+                &result.text,
+                &detected_window_language,
+                allowed_languages,
+            ) {
+                Some(language) => {
+                    result.language = language;
+                    true
+                }
+                None => {
+                    tracing::debug!(
+                        text = %result.text,
+                        window_language = %detected_window_language,
+                        "Discarding transcript segment outside selected languages"
+                    );
+                    false
+                }
+            }
+        });
 
         Ok(results)
     }
@@ -381,10 +438,86 @@ impl WhisperEngine {
     }
 }
 
+
+/// Determine the supported language scripts present in one transcript segment.
+/// Latin letters are treated as English; Tamil and Sinhala use their Unicode blocks.
+/// Any other alphabetic script is rejected rather than displayed as a false language.
+fn classify_segment_language(
+    text: &str,
+    fallback_language: &str,
+    allowed_languages: &[String],
+) -> Option<String> {
+    let mut languages: Vec<&'static str> = Vec::new();
+    let mut unsupported_script = false;
+
+    for ch in text.chars().filter(|ch| ch.is_alphabetic()) {
+        let code = ch as u32;
+        let language = match code {
+            0x0B80..=0x0BFF => Some("ta"),
+            0x0D80..=0x0DFF => Some("si"),
+            _ if ch.is_ascii_alphabetic() || (0x00C0..=0x024F).contains(&code) => Some("en"),
+            _ => {
+                unsupported_script = true;
+                None
+            }
+        };
+        if let Some(language) = language {
+            if !languages.contains(&language) {
+                languages.push(language);
+            }
+        }
+    }
+
+    if unsupported_script {
+        return None;
+    }
+
+    if languages.is_empty() {
+        if matches!(fallback_language, "ta" | "si" | "en") {
+            languages.push(match fallback_language {
+                "ta" => "ta",
+                "si" => "si",
+                _ => "en",
+            });
+        } else {
+            return None;
+        }
+    }
+
+    let allowed: Vec<&str> = if allowed_languages.is_empty() {
+        vec!["ta", "si", "en"]
+    } else {
+        allowed_languages.iter().map(String::as_str).collect()
+    };
+
+    if !languages.iter().all(|language| allowed.contains(language)) {
+        return None;
+    }
+
+    Some(if languages.len() > 1 {
+        "mul".to_string()
+    } else {
+        languages[0].to_string()
+    })
+}
+
 /// Filter out hallucinated tokens and special audio artifacts.
 fn clean_whisper_text(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // VOXY currently supports Tamil, Sinhala, and English only. Whisper's
+    // multilingual auto-detection can occasionally hallucinate Chinese text
+    // from low-confidence audio; do not surface unsupported CJK output.
+    if trimmed.chars().any(|ch| {
+        matches!(
+            ch as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F
+        )
+    }) {
+        tracing::warn!("Discarding unsupported CJK text returned by Whisper");
         return String::new();
     }
 
@@ -567,5 +700,48 @@ mod tests {
         assert_eq!(results[2].text, "ආයුබෝවන්");
         assert_eq!(results[2].start_ms, 6000);
         assert_eq!(results[2].end_ms, 9000);
+    }
+
+    #[test]
+    fn classifies_tamil_sinhala_and_english_segments_individually() {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        assert_eq!(
+            classify_segment_language("வணக்கம்", "en", &allowed).as_deref(),
+            Some("ta")
+        );
+        assert_eq!(
+            classify_segment_language("ආයුබෝවන්", "en", &allowed).as_deref(),
+            Some("si")
+        );
+        assert_eq!(
+            classify_segment_language("Good morning", "ta", &allowed).as_deref(),
+            Some("en")
+        );
+        assert_eq!(
+            classify_segment_language("Café meeting", "ta", &allowed).as_deref(),
+            Some("en")
+        );
+    }
+
+    #[test]
+    fn classifies_code_switched_segments_as_mixed() {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        assert_eq!(
+            classify_segment_language("வணக்கம், good morning", "ta", &allowed).as_deref(),
+            Some("mul")
+        );
+    }
+
+    #[test]
+    fn filters_languages_not_selected_and_unsupported_scripts() {
+        let tamil_only = vec!["ta".to_string()];
+        assert_eq!(
+            classify_segment_language("Good morning", "en", &tamil_only),
+            None
+        );
+        assert_eq!(
+            classify_segment_language("नमस्ते", "hi", &tamil_only),
+            None
+        );
     }
 }

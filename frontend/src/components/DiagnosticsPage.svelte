@@ -2,18 +2,20 @@
   import {
     sessionStatus,
     audioDevices,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
     errorMessage,
   } from '../lib/sessionStore';
 
-  $: deviceName = $audioDevices.find((d) => d.id === $selectedDeviceId)?.name ?? $selectedDeviceId;
+  $: outputDeviceName = $audioDevices.find((d) => d.id === $selectedOutputDeviceId)?.name ?? $selectedOutputDeviceId;
+  $: microphoneDeviceName = $audioDevices.find((d) => d.id === $selectedMicrophoneDeviceId)?.name ?? $selectedMicrophoneDeviceId;
 
   $: audioCapture   = $sessionStatus === 'active' || $sessionStatus === 'paused' ? 'Active' : 'Inactive';
   $: transcription  = $sessionStatus === 'active' ? 'Running' : $sessionStatus === 'paused' ? 'Paused' : 'Stopped';
 
-  // These will be provided by the Tauri backend once integrated.
-  // Until then they are explicitly marked as unavailable.
-  const NOT_AVAILABLE = 'Not available';
+  // Audio and transcription timing are logged by Rust. Runtime metrics are
+  // not yet exposed through a dedicated diagnostics IPC command.
+  const NOT_AVAILABLE = 'Not available yet';
 </script>
 
 <div class="diag-page" aria-label="Diagnostics">
@@ -31,18 +33,18 @@
       </div>
 
       <div class="diag-row">
-        <dt>Selected audio device</dt>
-        <dd class="truncate" title={deviceName}>{deviceName}</dd>
+        <dt>System audio output</dt>
+        <dd class="truncate" title={outputDeviceName}>{outputDeviceName}</dd>
       </div>
 
       <div class="diag-row">
-        <dt>Microphone</dt>
-        <dd class="unavailable">Not configured</dd>
+        <dt>Microphone input</dt>
+        <dd class="truncate" title={microphoneDeviceName}>{microphoneDeviceName}</dd>
       </div>
 
       <div class="diag-row">
         <dt>AI model</dt>
-        <dd class="unavailable">Not loaded — backend not yet integrated</dd>
+        <dd class="unavailable">Runtime status not exposed yet</dd>
       </div>
 
       <div class="diag-row">
@@ -58,9 +60,8 @@
   <section class="diag-section">
     <h2 class="section-heading">Performance</h2>
     <p class="diag-note">
-      Performance metrics are collected by the Rust backend during a live session.
-      Values below will be populated once the backend is integrated.
-      Simulated values are not shown here.
+      The Rust backend logs queue wait, inference duration, audio duration, and real-time factor during a live session.
+      These metrics are not yet displayed in this panel; simulated values are not shown here.
     </p>
 
     <dl class="diag-list">

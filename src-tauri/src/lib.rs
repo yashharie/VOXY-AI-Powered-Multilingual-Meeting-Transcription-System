@@ -47,6 +47,7 @@ pub fn run() {
             // ── Application ──────────────────────────────────────────────────
             core::commands::ping,
             core::commands::get_app_version,
+            core::commands::list_audio_devices,
             // ── Session lifecycle ─────────────────────────────────────────────
             core::commands::init_session,
             core::commands::start_session,

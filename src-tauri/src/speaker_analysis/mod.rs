@@ -1,14 +1,14 @@
-//! VAD and speaker diarization module — owned by Member 6.
+//! VAD and speaker diarization module â€” owned by Member 6.
 //!
-//! Branch: feature/vad-diarization — Directory: src-tauri/src/speaker_analysis/
+//! Branch: feature/vad-diarization â€” Directory: src-tauri/src/speaker_analysis/
 //!
 //! ```text
-//! ProcessedAudio ──► VadEngine::is_speech ──► bool  (gate for Whisper)
-//!                         │
-//!                         └─ finished speech regions ──► embeddings (windows) ──► SpeakerTracker
-//!                                                                  │
-//!       DiarizationEngine::assign_speaker(start_ms, end_ms) ◄──────┤  best-effort lookup
-//!       DiarizationEngine::drain_new_intervals()            ◄──────┘  SpeakerInterval -> transcript_processing
+//! ProcessedAudio â”€â”€â–º VadEngine::is_speech â”€â”€â–º bool  (gate for Whisper)
+//!                         â”‚
+//!                         â””â”€ finished speech regions â”€â”€â–º embeddings (windows) â”€â”€â–º SpeakerTracker
+//!                                                                  â”‚
+//!       DiarizationEngine::assign_speaker(start_ms, end_ms) â—„â”€â”€â”€â”€â”€â”€â”¤  best-effort lookup
+//!       DiarizationEngine::drain_new_intervals()            â—„â”€â”€â”€â”€â”€â”€â”˜  SpeakerInterval -> transcript_processing
 //! ```
 //!
 //! Interface kept from the stub (Member 2's pipeline compiles unchanged):
@@ -32,9 +32,9 @@ pub mod types;
 pub mod vad;
 
 #[cfg(feature = "sherpa")]
-pub mod sherpa;
-#[cfg(feature = "sherpa")]
 pub mod eval;
+#[cfg(feature = "sherpa")]
+pub mod sherpa;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -88,6 +88,8 @@ struct Shared {
     consecutive_diar_failures: u32,
     samples_seen: u64,
     pending_segments: Vec<SpeechSegment>,
+    /// Completed audio chunks for standalone VAD instances whose diarizer is external.
+    pending_chunks: Vec<types::SpeechChunk>,
     stats: AnalysisStats,
 }
 
@@ -104,7 +106,14 @@ impl Shared {
             if self.pending_segments.len() < MAX_PENDING_SEGMENTS {
                 self.pending_segments.push(chunk.as_segment());
             }
-            let Some(diar) = self.diar.as_mut() else { continue };
+            // A standalone VAD has no diarizer of its own. Retain the completed audio
+            // so the pipeline can forward it to the session-wide diarization engine.
+            if self.diar.is_none() && self.pending_chunks.len() < MAX_PENDING_SEGMENTS {
+                self.pending_chunks.push(chunk.clone());
+            }
+            let Some(diar) = self.diar.as_mut() else {
+                continue;
+            };
             let t = Instant::now();
             let result = diar.process_chunk(&chunk);
             self.stats.diarization_time_ms += t.elapsed().as_secs_f64() * 1000.0;
@@ -118,7 +127,9 @@ impl Shared {
                     self.consecutive_diar_failures += 1;
                     tracing::warn!(error = %e, "speaker diarization failed for a speech segment");
                     if self.consecutive_diar_failures >= MAX_DIAR_FAILURES {
-                        tracing::error!("speaker diarization disabled for this session after repeated errors");
+                        tracing::error!(
+                            "speaker diarization disabled for this session after repeated errors"
+                        );
                         self.diar = None;
                         self.stats.diarization_disabled_after_errors = true;
                     }
@@ -145,7 +156,7 @@ impl Shared {
     }
 }
 
-// ── Public engines ───────────────────────────────────────────────────────────
+// â”€â”€ Public engines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Speech / non-speech gate. Cheap to clone; clones share state.
 #[derive(Clone)]
@@ -191,9 +202,15 @@ impl VadEngine {
         lock(&self.shared).finish()
     }
 
-    /// Speech regions completed since the last call (session-relative timestamps).
+    /// Speech regions completed since the last call (source-relative timestamps).
     pub fn take_speech_segments(&self) -> Vec<SpeechSegment> {
         std::mem::take(&mut lock(&self.shared).pending_segments)
+    }
+
+    /// Completed speech audio for an external, session-wide diarization engine.
+    /// Only standalone VAD instances (without a paired diarizer) populate this queue.
+    pub fn take_speech_chunks(&self) -> Vec<types::SpeechChunk> {
+        std::mem::take(&mut lock(&self.shared).pending_chunks)
     }
 
     pub fn stats(&self) -> AnalysisStats {
@@ -217,10 +234,57 @@ impl DiarizationEngine {
         }
     }
 
+    /// Feed a completed speech chunk from any independent source into this shared diarizer.
+    /// `timeline_offset_ms` maps that source's local VAD clock onto the session timeline.
+    pub fn process_speech_chunk(&self, mut chunk: types::SpeechChunk, timeline_offset_ms: u64) {
+        chunk.start_sample = chunk
+            .start_sample
+            .saturating_add(types::ms_to_samples(timeline_offset_ms));
+
+        let mut shared = lock(&self.shared);
+        let (result, speaker_count, elapsed_ms) = match shared.diar.as_mut() {
+            Some(diar) => {
+                let started = Instant::now();
+                let result = diar.process_chunk(&chunk);
+                let speaker_count = diar.speaker_count();
+                (
+                    result,
+                    speaker_count,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                )
+            }
+            None => return,
+        };
+        shared.stats.speech_segments += 1;
+        shared.stats.speech_ms += chunk.end_ms().saturating_sub(chunk.start_ms());
+        shared.stats.diarization_time_ms += elapsed_ms;
+        match result {
+            Ok(()) => {
+                shared.consecutive_diar_failures = 0;
+                shared.stats.speakers = speaker_count;
+            }
+            Err(error) => {
+                shared.stats.diarization_errors += 1;
+                shared.consecutive_diar_failures += 1;
+                tracing::warn!(error = %error, "speaker diarization failed for an external speech source");
+                if shared.consecutive_diar_failures >= MAX_DIAR_FAILURES {
+                    tracing::error!(
+                        "speaker diarization disabled for this session after repeated errors"
+                    );
+                    shared.diar = None;
+                    shared.stats.diarization_disabled_after_errors = true;
+                }
+            }
+        }
+    }
+
     /// Generic speaker label for the time range, if known yet. `None` means "not known (yet)";
     /// the label may still arrive later through `drain_new_intervals`.
     pub fn assign_speaker(&self, start_ms: u64, end_ms: u64) -> Option<String> {
-        lock(&self.shared).diar.as_ref()?.speaker_for(start_ms, end_ms)
+        lock(&self.shared)
+            .diar
+            .as_ref()?
+            .speaker_for(start_ms, end_ms)
     }
 
     /// Speaker intervals produced since the last call, for `transcript_processing`.
@@ -233,11 +297,18 @@ impl DiarizationEngine {
 
     /// All retained intervals (bounded), oldest first.
     pub fn intervals(&self) -> Vec<SpeakerInterval> {
-        lock(&self.shared).diar.as_ref().map(|d| d.intervals()).unwrap_or_default()
+        lock(&self.shared)
+            .diar
+            .as_ref()
+            .map(|d| d.intervals())
+            .unwrap_or_default()
     }
 
     pub fn speaker_count(&self) -> usize {
-        lock(&self.shared).diar.as_ref().map_or(0, |d| d.speaker_count())
+        lock(&self.shared)
+            .diar
+            .as_ref()
+            .map_or(0, |d| d.speaker_count())
     }
 
     /// False when diarization is off, failed to initialise, or was disabled after repeated errors.
@@ -268,6 +339,7 @@ fn new_shared(vad: Box<dyn VadBackend>, diar: Option<DiarState>) -> Arc<Mutex<Sh
         consecutive_diar_failures: 0,
         samples_seen: 0,
         pending_segments: Vec::new(),
+        pending_chunks: Vec::new(),
         stats,
     }))
 }
@@ -310,7 +382,12 @@ pub fn create_engines(
         "speaker_analysis initialised"
     );
     let shared = new_shared(vad, diar);
-    Ok((VadEngine { shared: shared.clone() }, DiarizationEngine { shared }))
+    Ok((
+        VadEngine {
+            shared: shared.clone(),
+        },
+        DiarizationEngine { shared },
+    ))
 }
 
 /// Build engines around caller-supplied backends (tests, benchmarks, alternative models).
@@ -320,27 +397,41 @@ pub fn create_engines_with(
     diarization: DiarizationConfig,
 ) -> (VadEngine, DiarizationEngine) {
     let shared = new_shared(vad, embedder.map(|e| DiarState::new(diarization, e)));
-    (VadEngine { shared: shared.clone() }, DiarizationEngine { shared })
+    (
+        VadEngine {
+            shared: shared.clone(),
+        },
+        DiarizationEngine { shared },
+    )
 }
 
 #[cfg(feature = "sherpa")]
 fn build_vad(config: &SpeakerAnalysisConfig) -> AppResult<Box<dyn VadBackend>> {
-    Ok(Box::new(sherpa::SherpaSileroVad::new(&config.models.vad_path(), &config.vad)?))
+    Ok(Box::new(sherpa::SherpaSileroVad::new(
+        &config.models.vad_path(),
+        &config.vad,
+    )?))
 }
 
 #[cfg(not(feature = "sherpa"))]
 fn build_vad(_config: &SpeakerAnalysisConfig) -> AppResult<Box<dyn VadBackend>> {
-    Err(crate::core::error::AppError::Internal("built without the `sherpa` feature: Silero VAD unavailable".into()))
+    Err(crate::core::error::AppError::Internal(
+        "built without the `sherpa` feature: Silero VAD unavailable".into(),
+    ))
 }
 
 #[cfg(feature = "sherpa")]
 fn build_embedder(config: &SpeakerAnalysisConfig) -> AppResult<Box<dyn SpeakerEmbedder>> {
-    Ok(Box::new(sherpa::SherpaEmbedder::new(&config.models.embedding_path())?))
+    Ok(Box::new(sherpa::SherpaEmbedder::new(
+        &config.models.embedding_path(),
+    )?))
 }
 
 #[cfg(not(feature = "sherpa"))]
 fn build_embedder(_config: &SpeakerAnalysisConfig) -> AppResult<Box<dyn SpeakerEmbedder>> {
-    Err(crate::core::error::AppError::Internal("built without the `sherpa` feature: speaker embeddings unavailable".into()))
+    Err(crate::core::error::AppError::Internal(
+        "built without the `sherpa` feature: speaker embeddings unavailable".into(),
+    ))
 }
 
 #[cfg(test)]

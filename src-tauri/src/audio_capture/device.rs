@@ -4,13 +4,15 @@
 //! list of available endpoints, each carrying the information needed to
 //! display a device selection UI and to open a capture session.
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use wasapi::{DeviceCollection, Direction};
 
 use crate::audio_capture::error::CaptureError;
 
 /// Whether a device is a playback (output) or recording (input) endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AudioDeviceKind {
     /// Playback endpoint — used for loopback capture.
     Output,
@@ -19,7 +21,7 @@ pub enum AudioDeviceKind {
 }
 
 /// A discovered audio endpoint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDevice {
     /// Opaque Windows endpoint ID string. Pass this to
     /// [`DeviceSelection::ById`](crate::audio_capture::config::DeviceSelection::ById)
