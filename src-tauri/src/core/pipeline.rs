@@ -65,6 +65,8 @@ struct SourceState {
     source_name: &'static str,
     /// Number of chunks processed since the last audio-level diagnostic.
     diagnostic_chunks: u32,
+    /// Session-relative time of this source's first captured chunk.
+    timeline_offset_ms: Option<u64>,
 }
 
 impl SourceState {
@@ -78,6 +80,18 @@ impl SourceState {
             in_speech: false,
             source_name,
             diagnostic_chunks: 0,
+            timeline_offset_ms: None,
+        }
+    }
+
+    /// Forward completed speech audio to the session-wide diarizer. Each source's
+    /// VAD clock starts at zero, so its first-chunk offset is applied before embedding.
+    fn forward_completed_speech(&self, diarizer: &DiarizationEngine) {
+        let offset_ms = self.timeline_offset_ms.unwrap_or(0);
+        for speech_chunk in self.vad.take_speech_chunks() {
+            if diarizer.is_active() {
+                diarizer.process_speech_chunk(speech_chunk, offset_ms);
+            }
         }
     }
 }
@@ -246,19 +260,13 @@ impl Pipeline {
             )),
         };
 
-        // VAD + diarization.
-        // Two independent VadEngine instances share one Shared state (same Arc<Mutex<Shared>>)
-        // when created with create_engines — but that shares the VAD clock, which is wrong for
-        // two independent capture streams.  We therefore create TWO separate engine pairs and
-        // use only the DiarizationEngine from the second pair (mic), discarding the second VAD.
+        // Each source needs an independent VAD clock. The shared diarizer is created
+        // separately and receives completed audio chunks from both VAD instances.
         let speaker_cfg = SpeakerAnalysisConfig::default();
         let enable_diar = config.enable_diarization;
-
-        // Primary pair — loopback source drives VAD clock and diarization.
-        let (lb_vad, shared_diarizer) = create_engines(&speaker_cfg, enable_diar)
+        let (_, shared_diarizer) = create_engines(&speaker_cfg, enable_diar)
             .unwrap_or_else(|_| (VadEngine::new(), DiarizationEngine::new()));
-
-        // Microphone gets its own independent VAD (no diarization — labels come from shared_diarizer).
+        let lb_vad = VadEngine::new();
         let mic_vad = VadEngine::new();
 
         if enable_diar && !shared_diarizer.is_active() {
@@ -321,12 +329,15 @@ impl Pipeline {
                 // Session-relative start of this chunk (independent of which source it is).
                 let chunk_session_start_ms = chunk.timestamp_ms.saturating_sub(first_wall_ms);
 
-                // Route to per-source state.  Microphone audio is NEVER suppressed.
+                // Route to per-source state. Microphone audio is NEVER suppressed.
                 let state = if chunk.source == AudioSource::Loopback {
                     &mut lb_state
                 } else {
                     &mut mic_state
                 };
+                let source_offset_ms = *state
+                    .timeline_offset_ms
+                    .get_or_insert(chunk_session_start_ms);
 
                 // Preprocess to 16 kHz mono f32.
                 let audio_frame = crate::audio_capture::AudioFrame {
@@ -366,24 +377,9 @@ impl Pipeline {
                     true
                 });
 
-                // Drain completed VAD speech chunks and forward to the shared diarizer.
-                // The diarizer assigns speaker IDs using voice embeddings; both sources
-                // contribute to the same speaker model.
-                for speech_chunk in state.vad.take_speech_segments() {
-                    // Remap the speech chunk's sample-based timestamps to session-relative ms.
-                    // The VAD clock counts samples from zero (per-source); we offset by the
-                    // source's wall-clock anchor to get the correct session position.
-                    // For now we pass the chunk directly — the diarizer's own clock (fed by
-                    // process_samples) tracks the correct offsets internally.
-                    if shared_diarizer.is_active() {
-                        // The DiarizationEngine shares state with the loopback VadEngine inside
-                        // create_engines, so it already received the loopback speech samples.
-                        // For microphone we can't feed samples directly here, but the diarizer's
-                        // assign_speaker() lookup uses timestamp overlap, which still works because
-                        // both sources share the same session-relative timeline.
-                        let _ = speech_chunk; // consumed; diarizer receives data via VadEngine
-                    }
-                }
+                // Both independent VADs emit completed speech audio to the same diarizer.
+                // The source offset aligns each local VAD sample clock to session time.
+                state.forward_completed_speech(&shared_diarizer);
 
                 // Speech buffering — session-relative timestamps used throughout.
                 if is_speech {
@@ -467,9 +463,12 @@ impl Pipeline {
                 }
             }
 
-            // Close open VAD segments before flushing the remaining audio buffers.
+            // Close open VAD segments and forward their final speech chunks before
+            // flushing the remaining audio buffers.
             let _ = lb_state.vad.finish();
             let _ = mic_state.vad.finish();
+            lb_state.forward_completed_speech(&shared_diarizer);
+            mic_state.forward_completed_speech(&shared_diarizer);
 
             // Flush remaining audio through the same ordered inference queue.
             for state in [&lb_state, &mic_state] {
