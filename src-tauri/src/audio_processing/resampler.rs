@@ -266,3 +266,42 @@ pub fn resample_frame(
         frame.is_last,
     ))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::Resampler;
+
+    #[test]
+    fn buffers_capture_blocks_larger_than_rubato_fixed_chunk() {
+        let mut resampler = Resampler::new(48_000, 16_000, 1).unwrap();
+        let input = vec![0.25f32; 4_800];
+
+        let mut output = resampler.process(&input).unwrap();
+        assert!(!output.is_empty(), "complete 2,048-frame chunks should be processed");
+        assert_eq!(
+            resampler.input_carry[0].len(),
+            704,
+            "the unprocessed remainder must be retained for the next capture block"
+        );
+
+        output.extend(resampler.flush().unwrap());
+        assert!(
+            (output.len() as isize - 1_600).abs() <= 8,
+            "4,800 frames at 48 kHz should produce about 1,600 frames at 16 kHz, got {}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn combines_small_capture_blocks_until_a_full_resampler_chunk_exists() {
+        let mut resampler = Resampler::new(48_000, 16_000, 1).unwrap();
+
+        let first = resampler.process(&vec![0.1f32; 1_000]).unwrap();
+        assert!(first.is_empty(), "a partial input block must be buffered, not padded");
+
+        let second = resampler.process(&vec![0.1f32; 1_048]).unwrap();
+        assert!(!second.is_empty(), "the completed fixed-size chunk should now be processed");
+        assert!(resampler.input_carry[0].is_empty());
+    }
+}
