@@ -88,7 +88,8 @@
         <label class="checkbox-label">
           <input
             type="checkbox"
-            checked={$selectedLanguages.includes(lang.code as 'en' | 'si' | 'ta')}
+            checked={$selectedLanguages.includes(lang.code)}
+            disabled={isSessionActive}
             on:change={() => toggleLanguage(lang.code)}
           />
           {lang.label}
