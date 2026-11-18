@@ -134,7 +134,7 @@ async fn run_inference_queue(
                     }
                     result.is_partial = job.is_partial;
                     let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
-                    let segment = transcript_proc.build_segment(result.clone(), speaker);
+                    let mut segment = transcript_proc.build_segment(result.clone(), speaker);
 
                     if result.is_partial && show_partial {
                         crate::core::events::emit_transcript_segment(
@@ -144,11 +144,14 @@ async fn run_inference_queue(
                         if transcript_proc.is_duplicate(&segment) {
                             continue;
                         }
+
                         let idx = session.push_segment(segment.clone());
                         if idx > 0 {
-                            let mut registered = segment.clone();
-                            registered.index = idx;
-                            transcript_proc.register(&registered);
+                            // Session::push_segment assigns the index to its stored copy.
+                            // Copy that index onto the event payload too: the frontend uses
+                            // it as the stable segment ID for keyed rendering.
+                            segment.index = idx;
+                            transcript_proc.register(&segment);
                             crate::core::events::emit_transcript_segment(
                                 &app, &session.id(), segment,
                             );
