@@ -111,10 +111,6 @@ fn default_allowed_languages() -> Vec<String> {
     vec!["ta".to_string(), "si".to_string(), "en".to_string()]
 }
 
-fn default_true() -> bool {
-    true
-}
-
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
