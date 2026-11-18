@@ -23,8 +23,8 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend dependencies
-        run: npm ci --prefix frontend
+      - name: Synchronize frontend lockfile and install dependencies
+        run: npm install --prefix frontend --no-audit --no-fund
 
       - name: Check Svelte and TypeScript
         run: npm run check --prefix frontend
