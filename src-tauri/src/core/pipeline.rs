@@ -41,7 +41,9 @@ use crate::audio_processing::AudioProcessor;
 use crate::core::error::{AppError, AppResult};
 use crate::core::session::Session;
 use crate::core::types::{AudioSource as CoreAudioSource, SessionConfig};
-use crate::speaker_analysis::{create_engines, DiarizationEngine, SpeakerAnalysisConfig, VadEngine};
+use crate::speaker_analysis::{
+    create_engines, DiarizationEngine, SpeakerAnalysisConfig, VadEngine,
+};
 use crate::speech_recognition::WhisperEngine;
 use crate::transcript_processing::TranscriptProcessor;
 use tauri::AppHandle;
@@ -96,7 +98,6 @@ impl SourceState {
     }
 }
 
-
 /// A bounded inference request. Keeping these separate from capture means Whisper
 /// cannot hold the WASAPI receive loop while CPU inference is running.
 struct InferenceJob {
@@ -128,13 +129,17 @@ async fn run_inference_queue(
         let allowed = allowed_languages.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            whisper_clone.transcribe_window_with_languages(
-                &audio, 16_000, start_ms, &lang, &allowed,
-            )
-        }).await;
+            whisper_clone
+                .transcribe_window_with_languages(&audio, 16_000, start_ms, &lang, &allowed)
+        })
+        .await;
 
         let inference_ms = started.elapsed().as_millis() as u64;
-        let rtf = if audio_ms == 0 { 0.0 } else { inference_ms as f64 / audio_ms as f64 };
+        let rtf = if audio_ms == 0 {
+            0.0
+        } else {
+            inference_ms as f64 / audio_ms as f64
+        };
         tracing::info!(
             source = job.source_name,
             queue_wait_ms,
@@ -170,9 +175,7 @@ async fn run_inference_queue(
                         // it as the stable segment ID for keyed rendering.
                         segment.index = idx;
                         transcript_proc.register(&segment);
-                        crate::core::events::emit_transcript_segment(
-                            &app, &session.id(), segment,
-                        );
+                        crate::core::events::emit_transcript_segment(&app, &session.id(), segment);
                     }
                 }
             }
@@ -249,15 +252,20 @@ impl Pipeline {
                 tracing::info!(model = ?path, "Found Whisper model");
                 match WhisperEngine::new(&path) {
                     Ok(engine) => Arc::new(engine),
-                    Err(e) => return Err(AppError::Internal(format!(
-                        "Whisper engine failed to initialise: {e}"
-                    ))),
+                    Err(e) => {
+                        return Err(AppError::Internal(format!(
+                            "Whisper engine failed to initialise: {e}"
+                        )))
+                    }
                 }
             }
-            None => return Err(AppError::Internal(
-                "Whisper model not found. Place ggml-base.bin and main.exe in the \
-                 models/ folder next to voxy.exe.".into(),
-            )),
+            None => {
+                return Err(AppError::Internal(
+                    "Whisper model not found. Place ggml-base.bin and main.exe in the \
+                 models/ folder next to voxy.exe."
+                        .into(),
+                ))
+            }
         };
 
         // Each source needs an independent VAD clock. The shared diarizer is created
@@ -281,7 +289,8 @@ impl Pipeline {
                 Some(&session.id()),
                 &AppError::Internal(
                     "Speaker diarization model not found. \
-                     Speaker labels will not be assigned in this session.".into(),
+                     Speaker labels will not be assigned in this session."
+                        .into(),
                 ),
             );
         }
@@ -360,11 +369,24 @@ impl Pipeline {
                 state.diagnostic_chunks += 1;
                 if state.diagnostic_chunks >= 50 {
                     state.diagnostic_chunks = 0;
-                    let peak = processed.samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-                    let rms = if processed.samples.is_empty() { 0.0 } else {
-                        (processed.samples.iter().map(|s| s * s).sum::<f32>() / processed.samples.len() as f32).sqrt()
+                    let peak = processed
+                        .samples
+                        .iter()
+                        .fold(0.0_f32, |p, s| p.max(s.abs()));
+                    let rms = if processed.samples.is_empty() {
+                        0.0
+                    } else {
+                        (processed.samples.iter().map(|s| s * s).sum::<f32>()
+                            / processed.samples.len() as f32)
+                            .sqrt()
                     };
-                    tracing::info!(source = state.source_name, sample_count = processed.samples.len(), rms, peak, "Captured audio level (16 kHz mono)");
+                    tracing::info!(
+                        source = state.source_name,
+                        sample_count = processed.samples.len(),
+                        rms,
+                        peak,
+                        "Captured audio level (16 kHz mono)"
+                    );
                 }
 
                 // Anchor this source's VAD clock only after its first successfully
@@ -403,14 +425,19 @@ impl Pipeline {
                 //   A) natural pause ≥ 450 ms after at least 0.5 s of speech
                 //   B) buffer ≥ 5 s regardless of pauses (bounds memory / latency)
                 let min_speech_samples = 16_000 / 2; // 0.5 s
-                let should_transcribe =
-                    (state.in_speech
-                        && state.silence_ms >= 450
-                        && state.buffer.len() >= min_speech_samples)
+                let should_transcribe = (state.in_speech
+                    && state.silence_ms >= 450
+                    && state.buffer.len() >= min_speech_samples)
                     || state.buffer.len() >= 16_000 * 5;
 
                 if should_transcribe && !state.buffer.is_empty() {
-                    tracing::info!(source = state.source_name, buffered_samples = state.buffer.len(), speech_active = state.in_speech, silence_ms = state.silence_ms, "Queueing audio window for Whisper");
+                    tracing::info!(
+                        source = state.source_name,
+                        buffered_samples = state.buffer.len(),
+                        speech_active = state.in_speech,
+                        silence_ms = state.silence_ms,
+                        "Queueing audio window for Whisper"
+                    );
                     let audio = std::mem::take(&mut state.buffer);
                     let trans_start_ms = state.window_start_ms;
                     let is_continuous = state.in_speech && state.silence_ms < 450;
@@ -418,11 +445,13 @@ impl Pipeline {
                     if is_continuous {
                         // Retain ~0.8 s of overlap so context is not lost at window boundaries.
                         let overlap = (16_000 * 4 / 5).min(audio.len());
-                        state.buffer.extend_from_slice(&audio[audio.len() - overlap..]);
+                        state
+                            .buffer
+                            .extend_from_slice(&audio[audio.len() - overlap..]);
                         // Advance window start to the beginning of the overlap region.
                         let overlap_ms = (overlap as u64 * 1000) / 16_000;
-                        state.window_start_ms =
-                            (trans_start_ms + (audio.len() as u64 * 1000 / 16_000))
+                        state.window_start_ms = (trans_start_ms
+                            + (audio.len() as u64 * 1000 / 16_000))
                             .saturating_sub(overlap_ms);
                     } else {
                         state.in_speech = false;
@@ -574,15 +603,16 @@ fn find_whisper_model() -> Option<std::path::PathBuf> {
         "No Whisper model found. Searched: {:?}. \
          Download ggml-base.bin from huggingface.co/ggerganov/whisper.cpp \
          and place it in the models/ folder next to voxy.exe.",
-        search_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>()
+        search_dirs
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
     );
     None
 }
 
 #[cfg(test)]
 mod pipeline_tests {
-    use super::*;
-    use crate::audio_capture::types::AudioSource as CaptureAudioSource;
 
     /// Microphone chunks must NEVER be dropped regardless of loopback timing.
     #[test]
@@ -619,7 +649,7 @@ mod pipeline_tests {
     #[test]
     fn both_sources_share_same_timeline_anchor() {
         let first_wall_ms: u64 = 5_000_000;
-        let lb_wall_ms: u64 = 5_001_000;  // loopback chunk at 1.0 s
+        let lb_wall_ms: u64 = 5_001_000; // loopback chunk at 1.0 s
         let mic_wall_ms: u64 = 5_001_050; // mic chunk at 1.05 s (nearly simultaneous)
 
         let lb_session = lb_wall_ms.saturating_sub(first_wall_ms);
