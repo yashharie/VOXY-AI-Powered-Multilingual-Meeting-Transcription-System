@@ -8,7 +8,7 @@
 //!   serialised `IpcError { code, message }`.  The frontend's `unwrap()`
 //!   helper in ipc.ts parses this envelope.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::error::{AppResult, IpcResult};
 use super::events;
