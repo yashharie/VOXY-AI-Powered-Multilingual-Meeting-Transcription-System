@@ -88,7 +88,6 @@ impl SourceState {
 struct InferenceJob {
     audio: Vec<f32>,
     start_ms: u64,
-    is_partial: bool,
     source_name: &'static str,
     queued_at: std::time::Instant,
 }
@@ -101,7 +100,6 @@ async fn run_inference_queue(
     diarizer: DiarizationEngine,
     language_hint: String,
     allowed_languages: Vec<String>,
-    _show_partial: bool,
 ) {
     let mut transcript_proc = TranscriptProcessor::new();
 
@@ -282,7 +280,6 @@ impl Pipeline {
 
         let language_hint = config.language_hint.clone();
         let allowed_languages = config.allowed_languages.clone();
-        let show_partial = config.show_partial_results;
         let inference_session = session.clone();
         let inference_app = app.clone();
         let inference_whisper = whisper.clone();
@@ -302,7 +299,6 @@ impl Pipeline {
                 inference_diarizer,
                 language_hint.clone(),
                 allowed_languages,
-                show_partial,
             ));
 
             // Wall-clock anchor: set on the very first chunk received (either source).
@@ -438,7 +434,6 @@ impl Pipeline {
                     let job = InferenceJob {
                         audio,
                         start_ms: trans_start_ms,
-                        is_partial: is_continuous,
                         source_name: state.source_name,
                         queued_at: std::time::Instant::now(),
                     };
@@ -466,7 +461,6 @@ impl Pipeline {
                 let job = InferenceJob {
                     audio: state.buffer.clone(),
                     start_ms: state.window_start_ms,
-                    is_partial: false,
                     source_name: state.source_name,
                     queued_at: std::time::Instant::now(),
                 };
