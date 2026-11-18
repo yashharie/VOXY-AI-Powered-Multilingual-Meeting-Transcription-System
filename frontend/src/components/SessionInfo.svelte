@@ -40,7 +40,7 @@
   $: deviceName = $audioDevices.find((d) => d.id === $selectedDeviceId)?.name ?? $selectedDeviceId;
 
   const langLabels: Record<string, string> = {
-    en: 'English', si: 'Sinhala', ta: 'Tamil', und: 'Unknown',
+    en: 'English', si: 'Sinhala', ta: 'Tamil', mul: 'Mixed', und: 'Unknown',
   };
 </script>
 
