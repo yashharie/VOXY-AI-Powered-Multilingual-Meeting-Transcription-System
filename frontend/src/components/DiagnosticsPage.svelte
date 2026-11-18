@@ -33,8 +33,8 @@
       </div>
 
       <div class="diag-row">
-        <dt>Selected audio device</dt>
-        <dd class="truncate" title={deviceName}>{deviceName}</dd>
+        <dt>System audio output</dt>
+        <dd class="truncate" title={outputDeviceName}>{outputDeviceName}</dd>
       </div>
 
       <div class="diag-row">
