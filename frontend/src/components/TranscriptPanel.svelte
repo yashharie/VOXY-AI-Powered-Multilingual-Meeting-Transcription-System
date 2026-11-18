@@ -312,5 +312,6 @@
   :global(.lang-si) { font-family: 'Noto Sans Sinhala', 'Iskoola Pota', sans-serif; }
   :global(.lang-ta) { font-family: 'Noto Sans Tamil', 'Latha', sans-serif; }
   :global(.lang-en) { font-family: inherit; }
+  :global(.lang-mul) { font-family: inherit; }
   :global(.lang-und){ font-family: inherit; color: var(--color-text-muted); }
 </style>
