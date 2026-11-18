@@ -56,8 +56,24 @@ wasapi = "0.14"
 
 # ── Speaker analysis (VAD + diarization) — Member 6 ───────────────────────────
 # sherpa-onnx provides Silero VAD and speaker embedding via ONNX Runtime.
-# Optional: compile with `--features sherpa` to enable real model inference.
-# Without this feature the energy-based VAD fallback is used automatically.
+#
+# To enable real speaker diarization:
+#   1. Add `--features sherpa` to your cargo build / tauri build command.
+#   2. Download the ONNX embedding model and place it in models/:
+#        3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+#      (from https://github.com/k2-fsa/sherpa-onnx/releases)
+#   3. Optionally download silero_vad.onnx for better VAD accuracy.
+#
+# Without this feature:
+#   - EnergyVad (pure-Rust RMS gate) is used — no ONNX dependency.
+#   - Speaker diarization is unavailable.
+#   - `DiarizationEngine::is_active()` returns false.
+#   - The pipeline reports "Speaker diarization unavailable" to the frontend.
+#   - Transcription continues normally without speaker labels.
+#
+# Note: the 3dspeaker model was trained primarily on Mandarin. Its accuracy for
+# Tamil and Sinhala speakers has not been evaluated. Alternative multilingual
+# embedding models should be tested before production use.
 sherpa-onnx = { version = "1", optional = true }
 
 [features]

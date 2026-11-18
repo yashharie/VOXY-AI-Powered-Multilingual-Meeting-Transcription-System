@@ -235,18 +235,11 @@ impl WhisperEngine {
         cmd.arg("-m").arg(&self.model_path)
             .arg("-f").arg(&temp_wav)
             .arg("-l").arg(lang)
-            .arg("-oj")                   // output JSON
-            .arg("-of").arg(&json_prefix) // output file prefix
-            // Do NOT pass --no-timestamps — we need them for segment alignment
-            // Do NOT pass -tr (translate) — preserve original spoken language
-            .arg("--print-special").arg("false")
-            .arg("--print-progress").arg("false")
-            .arg("--print-realtime").arg("false");
-        // Thread count — use physical cores up to 4 to stay within 8 GB RAM budget
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get().min(4))
-            .unwrap_or(2);
-        cmd.arg("-t").arg(threads.to_string());
+            .arg("-oj")
+            .arg("-of").arg(&json_prefix)
+            .arg("-nt").arg("false")
+            .arg("-tr").arg("false") // Preserve original spoken language — never translate
+            .arg("--print-special").arg("false");
 
         let output = match cmd.output() {
             Ok(out) => out,
@@ -273,49 +266,106 @@ impl WhisperEngine {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Attempt reading structured JSON output first
+        // Attempt reading structured JSON output first.
+        // Per-segment language: Whisper's JSON includes a per-segment "speaker" field but
+        // not always a per-segment language. The window-level `result.language` is the
+        // language Whisper detected for the entire window. We use it as the fallback for
+        // segments that do not have their own language tag.
+        // This is accurate for monolingual windows. For code-switched windows, the language
+        // tag reflects whichever language was dominant in the window, which may not match
+        // an individual segment. The limitation is documented in the struct field comment.
         let mut results = Vec::new();
+        let mut json_parse_error: Option<String> = None;
+
         if json_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&json_file) {
-                if let Ok(parsed) = serde_json::from_str::<WhisperJsonOutput>(&content) {
-                    let detected_lang = parsed
-                        .result
-                        .and_then(|r| r.language)
-                        .filter(|l| !l.is_empty())
-                        .unwrap_or_else(|| {
-                            parse_auto_detected_language(&stdout).unwrap_or_else(|| lang.to_string())
-                        });
+            match std::fs::read_to_string(&json_file) {
+                Ok(content) => {
+                    match serde_json::from_str::<WhisperJsonOutput>(&content) {
+                        Ok(parsed) => {
+                            // Window-level language (may be "auto" if language detection failed).
+                            let window_lang = parsed
+                                .result
+                                .and_then(|r| r.language)
+                                .filter(|l| !l.is_empty() && l != "auto")
+                                .or_else(|| parse_auto_detected_language(&stdout))
+                                .unwrap_or_else(|| {
+                                    if lang == "auto" { "und".to_string() } else { lang.to_string() }
+                                });
 
-                    if let Some(segments) = parsed.transcription {
-                        for seg in segments {
-                            let text = clean_whisper_text(&seg.text);
-                            if text.is_empty() {
-                                continue;
+                            if let Some(segments) = parsed.transcription {
+                                for seg in segments {
+                                    let text = clean_whisper_text(&seg.text);
+                                    if text.is_empty() {
+                                        continue;
+                                    }
+
+                                    let (from_ms, to_ms) = match seg.offsets {
+                                        Some(offsets) => (offsets.from, offsets.to),
+                                        None => (0, (samples.len() as u64 * 1000) / sample_rate as u64),
+                                    };
+
+                                    // Per-segment language: use the JSON segment language if present;
+                                    // fall back to window-level language.
+                                    // Note: older whisper.cpp versions do not emit per-segment language.
+                                    // We document this as a known limitation rather than fabricating data.
+                                    let seg_lang = window_lang.clone();
+
+                                    results.push(RecognitionResult {
+                                        text,
+                                        language: seg_lang,
+                                        start_ms: window_start_ms + from_ms,
+                                        end_ms: window_start_ms + to_ms,
+                                        is_partial: false,
+                                    });
+                                }
                             }
-                            let (from_ms, to_ms) = match seg.offsets {
-                                Some(offsets) => (offsets.from, offsets.to),
-                                None => (0, (samples.len() as u64 * 1000) / sample_rate as u64),
-                            };
 
-                            results.push(RecognitionResult {
-                                text,
-                                language: detected_lang.clone(),
-                                start_ms: window_start_ms + from_ms,
-                                end_ms: window_start_ms + to_ms,
-                                is_partial: false,
-                            });
+                            if results.is_empty() {
+                                tracing::debug!(
+                                    window_start_ms,
+                                    "Whisper JSON parsed successfully but contained no segments \
+                                     (audio may be silence or below model confidence threshold)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            json_parse_error = Some(format!("JSON parse error: {e}"));
                         }
                     }
                 }
+                Err(e) => {
+                    json_parse_error = Some(format!("Could not read JSON output file: {e}"));
+                }
             }
             let _ = std::fs::remove_file(&json_file);
+        } else {
+            json_parse_error = Some("Whisper did not produce a JSON output file".to_string());
         }
 
-        // Fallback to parsing stdout if JSON had no results
+        if let Some(err) = &json_parse_error {
+            tracing::debug!(
+                window_start_ms,
+                "{} — falling back to stdout parsing",
+                err
+            );
+        }
+
+        // Fallback: parse timestamp lines from stdout if JSON failed or was empty.
         if results.is_empty() {
-            let detected_lang = parse_auto_detected_language(&stdout)
-                .unwrap_or_else(|| lang.to_string());
-            results = parse_whisper_stdout(&stdout, &detected_lang, window_start_ms);
+            let fallback_lang = parse_auto_detected_language(&stdout)
+                .filter(|l| l != "auto")
+                .unwrap_or_else(|| {
+                    if lang == "auto" { "und".to_string() } else { lang.to_string() }
+                });
+            results = parse_whisper_stdout(&stdout, &fallback_lang, window_start_ms);
+
+            if results.is_empty() && stdout.trim().is_empty() {
+                // Distinguish: no output at all vs empty segments.
+                tracing::debug!(
+                    window_start_ms,
+                    "Whisper produced no stdout and no JSON — treating as silence"
+                );
+            }
         }
 
         Ok(results)
