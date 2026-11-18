@@ -250,9 +250,9 @@ impl WhisperEngine {
             .arg("-t").arg(thread_count.to_string())
             .arg("-oj")
             .arg("-of").arg(&json_prefix)
-            // Do not pass textual "false" after boolean flags. whisper.cpp treats
-            // -nt and -tr as switches; omitting them preserves timestamps and source language.
-            .arg("--print-special").arg("false");
+            // Do not pass textual "false" after boolean switches. whisper.cpp
+            // parses these as flags, not key/value options. Omitting -nt preserves
+            // segment timestamps; omitting -tr preserves the original spoken language.
 
         let output = match cmd.output() {
             Ok(out) => out,
