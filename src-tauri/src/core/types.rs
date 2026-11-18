@@ -122,6 +122,7 @@ impl Default for SessionConfig {
         Self {
             audio_source: AudioSource::Both,
             language_hint: "auto".to_string(),
+            allowed_languages: default_allowed_languages(),
             enable_diarization: false,
             show_partial_results: true,
             microphone_device_id: None,
