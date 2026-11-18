@@ -59,7 +59,7 @@
             <div class="meta">
               <strong>Session:</strong> ${name} &nbsp;|&nbsp;
               <strong>Platform:</strong> ${platform} &nbsp;|&nbsp;
-              <strong>Target Language:</strong> ${$targetLanguage.toUpperCase()} &nbsp;|&nbsp;
+              <strong>Languages:</strong> ${$selectedLanguages.map((code) => code.toUpperCase()).join(', ')} &nbsp;|&nbsp;
               <strong>Date:</strong> ${dateStr} &nbsp;|&nbsp;
               <strong>Total Segments:</strong> ${$segments.length}
             </div>
