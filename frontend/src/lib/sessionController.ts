@@ -126,7 +126,6 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
         language_hint: languageHint,
         allowed_languages: languages,
         enable_diarization: false,
-        show_partial_results: true,
         loopback_device_id: outputDeviceId !== 'default-output' ? outputDeviceId : undefined,
         microphone_device_id: microphoneDeviceId !== 'default-input' ? microphoneDeviceId : undefined,
       });
