@@ -134,7 +134,7 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
   if (isTauri()) {
     try {
       const nativeResult = await invoke<IpcResult<AudioDevice[]>>('list_audio_devices');
-      const nativeDevices = unwrap(nativeResult);
+      const nativeDevices = unwrap<AudioDevice[]>(nativeResult);
       return nativeDevices.length > 0 ? nativeDevices : fallback;
     } catch (err) {
       console.warn('Native WASAPI device enumeration failed:', err);
