@@ -182,13 +182,30 @@ impl WhisperEngine {
         None
     }
 
-    /// Transcribe a window of 16kHz mono audio samples with accurate timestamps.
+    /// Transcribe using the default supported language set.
     pub fn transcribe_window(
         &self,
         samples: &[f32],
         sample_rate: u32,
         window_start_ms: u64,
         language_hint: &str,
+    ) -> AppResult<Vec<RecognitionResult>> {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        self.transcribe_window_with_languages(
+            samples, sample_rate, window_start_ms, language_hint, &allowed,
+        )
+    }
+
+    /// Transcribe and retain only text written in the selected supported scripts.
+    /// Whisper still detects one dominant language per window; script inspection
+    /// provides a best-effort language label for each returned text segment.
+    pub fn transcribe_window_with_languages(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+        window_start_ms: u64,
+        language_hint: &str,
+        allowed_languages: &[String],
     ) -> AppResult<Vec<RecognitionResult>> {
         if !self.is_loaded {
             return Err(AppError::Internal(format!(
@@ -288,6 +305,7 @@ impl WhisperEngine {
         // tag reflects whichever language was dominant in the window, which may not match
         // an individual segment. The limitation is documented in the struct field comment.
         let mut results = Vec::new();
+        let mut detected_window_language = lang.to_string();
         let mut json_parse_error: Option<String> = None;
 
         if json_file.is_file() {
@@ -304,6 +322,7 @@ impl WhisperEngine {
                                 .unwrap_or_else(|| {
                                     if lang == "auto" { "und".to_string() } else { lang.to_string() }
                                 });
+                            detected_window_language = window_lang.clone();
 
                             if let Some(segments) = parsed.transcription {
                                 for seg in segments {
@@ -370,6 +389,7 @@ impl WhisperEngine {
                 .unwrap_or_else(|| {
                     if lang == "auto" { "und".to_string() } else { lang.to_string() }
                 });
+            detected_window_language = fallback_lang.clone();
             results = parse_whisper_stdout(&stdout, &fallback_lang, window_start_ms);
 
             if results.is_empty() && stdout.trim().is_empty() {
@@ -380,6 +400,30 @@ impl WhisperEngine {
                 );
             }
         }
+
+        // whisper.cpp reports one dominant language for the whole audio window.
+        // Reclassify each returned segment from its Unicode scripts so Tamil,
+        // Sinhala, and English can coexist in the same window.
+        results.retain_mut(|result| {
+            match classify_segment_language(
+                &result.text,
+                &detected_window_language,
+                allowed_languages,
+            ) {
+                Some(language) => {
+                    result.language = language;
+                    true
+                }
+                None => {
+                    tracing::debug!(
+                        text = %result.text,
+                        window_language = %detected_window_language,
+                        "Discarding transcript segment outside selected languages"
+                    );
+                    false
+                }
+            }
+        });
 
         Ok(results)
     }
@@ -392,6 +436,69 @@ impl WhisperEngine {
     ) -> AppResult<Vec<RecognitionResult>> {
         self.transcribe_window(&audio.samples, audio.sample_rate, 0, language_hint)
     }
+}
+
+
+/// Determine the supported language scripts present in one transcript segment.
+/// Latin letters are treated as English; Tamil and Sinhala use their Unicode blocks.
+/// Any other alphabetic script is rejected rather than displayed as a false language.
+fn classify_segment_language(
+    text: &str,
+    fallback_language: &str,
+    allowed_languages: &[String],
+) -> Option<String> {
+    let mut languages: Vec<&'static str> = Vec::new();
+    let mut unsupported_script = false;
+
+    for ch in text.chars().filter(|ch| ch.is_alphabetic()) {
+        let code = ch as u32;
+        let language = match code {
+            0x0B80..=0x0BFF => Some("ta"),
+            0x0D80..=0x0DFF => Some("si"),
+            _ if ch.is_ascii_alphabetic() => Some("en"),
+            _ => {
+                unsupported_script = true;
+                None
+            }
+        };
+        if let Some(language) = language {
+            if !languages.contains(&language) {
+                languages.push(language);
+            }
+        }
+    }
+
+    if unsupported_script {
+        return None;
+    }
+
+    if languages.is_empty() {
+        if matches!(fallback_language, "ta" | "si" | "en") {
+            languages.push(match fallback_language {
+                "ta" => "ta",
+                "si" => "si",
+                _ => "en",
+            });
+        } else {
+            return None;
+        }
+    }
+
+    let allowed: Vec<&str> = if allowed_languages.is_empty() {
+        vec!["ta", "si", "en"]
+    } else {
+        allowed_languages.iter().map(String::as_str).collect()
+    };
+
+    if !languages.iter().all(|language| allowed.contains(language)) {
+        return None;
+    }
+
+    Some(if languages.len() > 1 {
+        "mul".to_string()
+    } else {
+        languages[0].to_string()
+    })
 }
 
 /// Filter out hallucinated tokens and special audio artifacts.
