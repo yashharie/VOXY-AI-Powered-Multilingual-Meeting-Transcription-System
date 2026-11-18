@@ -701,4 +701,43 @@ mod tests {
         assert_eq!(results[2].start_ms, 6000);
         assert_eq!(results[2].end_ms, 9000);
     }
+
+    #[test]
+    fn classifies_tamil_sinhala_and_english_segments_individually() {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        assert_eq!(
+            classify_segment_language("வணக்கம்", "en", &allowed).as_deref(),
+            Some("ta")
+        );
+        assert_eq!(
+            classify_segment_language("ආයුබෝවන්", "en", &allowed).as_deref(),
+            Some("si")
+        );
+        assert_eq!(
+            classify_segment_language("Good morning", "ta", &allowed).as_deref(),
+            Some("en")
+        );
+    }
+
+    #[test]
+    fn classifies_code_switched_segments_as_mixed() {
+        let allowed = vec!["ta".to_string(), "si".to_string(), "en".to_string()];
+        assert_eq!(
+            classify_segment_language("வணக்கம், good morning", "ta", &allowed).as_deref(),
+            Some("mul")
+        );
+    }
+
+    #[test]
+    fn filters_languages_not_selected_and_unsupported_scripts() {
+        let tamil_only = vec!["ta".to_string()];
+        assert_eq!(
+            classify_segment_language("Good morning", "en", &tamil_only),
+            None
+        );
+        assert_eq!(
+            classify_segment_language("नमस्ते", "hi", &tamil_only),
+            None
+        );
+    }
 }
