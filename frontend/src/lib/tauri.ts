@@ -126,10 +126,8 @@ export async function stopSession(sessionId: string): Promise<SessionInfo> {
 export async function listAudioDevices(): Promise<AudioDevice[]> {
   // Static fallback — always shown so dropdown is never empty
   const fallback: AudioDevice[] = [
-    { id: 'default',       name: 'Default Microphone (System)',           is_default: true  },
-    { id: 'dev-mic',       name: 'Microphone (Voice Input)',              is_default: false },
-    { id: 'dev-speakers',  name: 'Speakers / Headset (Meeting Audio)',    is_default: false },
-    { id: 'dev-stereomix', name: 'Stereo Mix (System Loopback)',          is_default: false },
+    { id: 'default-output', name: 'Default system output', is_default: true, kind: 'output' },
+    { id: 'default-input', name: 'Default microphone', is_default: true, kind: 'input' },
   ];
 
   if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
@@ -156,8 +154,10 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
 
     const result: AudioDevice[] = [];
 
-    // Default / communications device first
-    result.push({ id: 'default', name: 'Default Microphone (System)', is_default: true });
+    // Keep input and output defaults separate so a microphone ID is never
+    // accidentally passed to the WASAPI loopback endpoint.
+    result.push({ id: 'default-output', name: 'Default system output', is_default: true, kind: 'output' });
+    result.push({ id: 'default-input', name: 'Default microphone', is_default: true, kind: 'input' });
 
     devs.forEach((d, i) => {
       if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
@@ -167,12 +167,14 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
           id: d.deviceId,
           name: d.label || `Microphone ${i + 1}`,
           is_default: false,
+          kind: 'input',
         });
       } else if (d.kind === 'audiooutput') {
         result.push({
           id: d.deviceId,
-          name: d.label ? `Output: ${d.label}` : `Speaker ${i + 1}`,
+          name: d.label || `Speaker ${i + 1}`,
           is_default: false,
+          kind: 'output',
         });
       }
     });
