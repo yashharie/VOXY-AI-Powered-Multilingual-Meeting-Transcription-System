@@ -335,10 +335,6 @@ impl Pipeline {
                 } else {
                     &mut mic_state
                 };
-                let _source_offset_ms = *state
-                    .timeline_offset_ms
-                    .get_or_insert(chunk_session_start_ms);
-
                 // Preprocess to 16 kHz mono f32.
                 let audio_frame = crate::audio_capture::AudioFrame {
                     samples: chunk.samples,
@@ -370,6 +366,12 @@ impl Pipeline {
                     };
                     tracing::info!(source = state.source_name, sample_count = processed.samples.len(), rms, peak, "Captured audio level (16 kHz mono)");
                 }
+
+                // Anchor this source's VAD clock only after its first successfully
+                // preprocessed chunk, then reuse that offset for all completed speech.
+                let _source_offset_ms = *state
+                    .timeline_offset_ms
+                    .get_or_insert(chunk_session_start_ms);
 
                 // VAD — independent per source.
                 let is_speech = state.vad.process_samples(&processed.samples).unwrap_or_else(|error| {
