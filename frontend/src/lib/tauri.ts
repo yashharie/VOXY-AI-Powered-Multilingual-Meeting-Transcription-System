@@ -66,6 +66,7 @@ function unwrap<T>(result: any): T {
 export interface SessionConfig {
   audio_source: 'Loopback' | 'Microphone' | 'Both';
   language_hint: string;
+  allowed_languages: string[];
   enable_diarization: boolean;
   show_partial_results: boolean;
   microphone_device_id?: string;
