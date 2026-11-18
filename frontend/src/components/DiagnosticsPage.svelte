@@ -38,8 +38,8 @@
       </div>
 
       <div class="diag-row">
-        <dt>Microphone</dt>
-        <dd class="unavailable">Not configured</dd>
+        <dt>Microphone input</dt>
+        <dd class="truncate" title={microphoneDeviceName}>{microphoneDeviceName}</dd>
       </div>
 
       <div class="diag-row">
