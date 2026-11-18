@@ -118,7 +118,6 @@ impl Default for SessionConfig {
             language_hint: "auto".to_string(),
             allowed_languages: default_allowed_languages(),
             enable_diarization: false,
-            show_partial_results: true,
             microphone_device_id: None,
             loopback_device_id: None,
         }
