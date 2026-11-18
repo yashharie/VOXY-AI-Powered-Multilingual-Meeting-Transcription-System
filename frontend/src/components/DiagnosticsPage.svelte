@@ -60,9 +60,8 @@
   <section class="diag-section">
     <h2 class="section-heading">Performance</h2>
     <p class="diag-note">
-      Performance metrics are collected by the Rust backend during a live session.
-      Values below will be populated once the backend is integrated.
-      Simulated values are not shown here.
+      The Rust backend logs queue wait, inference duration, audio duration, and real-time factor during a live session.
+      These metrics are not yet displayed in this panel; simulated values are not shown here.
     </p>
 
     <dl class="diag-list">
