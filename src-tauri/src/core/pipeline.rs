@@ -63,6 +63,8 @@ struct SourceState {
     in_speech: bool,
     /// Label used in diagnostics.
     source_name: &'static str,
+    /// Number of chunks processed since the last audio-level diagnostic.
+    diagnostic_chunks: u32,
 }
 
 impl SourceState {
@@ -75,6 +77,7 @@ impl SourceState {
             silence_ms: 0,
             in_speech: false,
             source_name,
+            diagnostic_chunks: 0,
         }
     }
 }
@@ -339,8 +342,23 @@ impl Pipeline {
 
                 let chunk_dur_ms = (processed.samples.len() as u64 * 1000) / 16_000;
 
+                // Report real input levels periodically so silent/incorrect capture formats
+                // can be distinguished from VAD and Whisper failures without flooding logs.
+                state.diagnostic_chunks += 1;
+                if state.diagnostic_chunks >= 50 {
+                    state.diagnostic_chunks = 0;
+                    let peak = processed.samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+                    let rms = if processed.samples.is_empty() { 0.0 } else {
+                        (processed.samples.iter().map(|s| s * s).sum::<f32>() / processed.samples.len() as f32).sqrt()
+                    };
+                    tracing::info!(source = state.source_name, sample_count = processed.samples.len(), rms, peak, "Captured audio level (16 kHz mono)");
+                }
+
                 // VAD — independent per source.
-                let is_speech = state.vad.process_samples(&processed.samples).unwrap_or(true);
+                let is_speech = state.vad.process_samples(&processed.samples).unwrap_or_else(|error| {
+                    tracing::warn!(source = state.source_name, error = %error, "VAD failed; passing audio through");
+                    true
+                });
 
                 // Drain completed VAD speech chunks and forward to the shared diarizer.
                 // The diarizer assigns speaker IDs using voice embeddings; both sources
@@ -388,6 +406,7 @@ impl Pipeline {
                     || state.buffer.len() >= 16_000 * 5;
 
                 if should_transcribe && !state.buffer.is_empty() {
+                    tracing::info!(source = state.source_name, buffered_samples = state.buffer.len(), speech_active = state.in_speech, silence_ms = state.silence_ms, "Queueing audio window for Whisper");
                     let audio = std::mem::take(&mut state.buffer);
                     let trans_start_ms = state.window_start_ms;
                     let is_continuous = state.in_speech && state.silence_ms < 450;
@@ -425,6 +444,10 @@ impl Pipeline {
                 }
             } // end while recv
 
+            // Close open VAD segments before flushing the remaining audio buffers.
+            let _ = lb_state.vad.finish();
+            let _ = mic_state.vad.finish();
+
             // Flush remaining audio through the same ordered inference queue.
             for state in [&lb_state, &mic_state] {
                 if state.buffer.len() < 3_200 {
@@ -442,8 +465,6 @@ impl Pipeline {
                 }
             }
 
-            let _ = lb_state.vad.finish();
-            let _ = mic_state.vad.finish();
             drop(inference_tx);
             if let Err(error) = inference_worker.await {
                 tracing::error!(error = %error, "Inference worker did not shut down cleanly");
