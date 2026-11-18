@@ -87,6 +87,10 @@ pub struct SessionConfig {
     /// Language hint for Whisper, e.g. "si", "ta", "en", "auto".
     #[serde(default = "default_language_hint")]
     pub language_hint: String,
+    /// Languages allowed in the transcript. Multiple selections use Whisper auto-detection
+    /// and per-segment script validation.
+    #[serde(default = "default_allowed_languages")]
+    pub allowed_languages: Vec<String>,
     #[serde(default)]
     pub enable_diarization: bool,
     #[serde(default = "default_true")]
