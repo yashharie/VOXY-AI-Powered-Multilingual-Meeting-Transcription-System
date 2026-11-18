@@ -736,6 +736,17 @@ pub(crate) fn bytes_to_f32_mono(
 mod capture_tests {
     use super::bytes_to_f32_mono;
 
+    fn decode_float(raw: &[u8], channels: usize, bytes_per_frame: usize) -> Vec<f32> {
+        bytes_to_f32_mono(
+            raw,
+            channels,
+            bytes_per_frame,
+            wasapi::SampleType::Float,
+            32,
+            32,
+        )
+    }
+
     #[test]
     fn downmix_stereo_to_mono() {
         // Stereo: left = 1.0, right = -1.0  →  mono = 0.0
@@ -746,7 +757,7 @@ mod capture_tests {
         raw.extend_from_slice(&right.to_le_bytes());
 
         // bytes_per_frame = 2 channels × 4 bytes = 8
-        let mono = bytes_to_f32_mono(&raw, 2, 8);
+        let mono = decode_float(&raw, 2, 8);
         assert_eq!(mono.len(), 1);
         assert!(
             (mono[0] - 0.0).abs() < 1e-6,
@@ -759,14 +770,14 @@ mod capture_tests {
         let sample: f32 = 0.5;
         let raw = sample.to_le_bytes().to_vec();
         // bytes_per_frame = 1 channel × 4 bytes = 4
-        let mono = bytes_to_f32_mono(&raw, 1, 4);
+        let mono = decode_float(&raw, 1, 4);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]
     fn empty_buffer_produces_no_samples() {
-        let mono = bytes_to_f32_mono(&[], 2, 8);
+        let mono = decode_float(&[], 2, 8);
         assert!(mono.is_empty());
     }
 
@@ -809,7 +820,40 @@ mod capture_tests {
     #[test]
     fn decodes_signed_16_bit_pcm() {
         let raw = 16_384i16.to_le_bytes().to_vec();
-        let mono = bytes_to_f32_mono(&raw, 1, 2);
+        let mono = bytes_to_f32_mono(
+            &raw, 1, 2, wasapi::SampleType::Int, 16, 16,
+        );
+        assert_eq!(mono.len(), 1);
+        assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decodes_signed_32_bit_pcm() {
+        let raw = 1_073_741_824i32.to_le_bytes().to_vec();
+        let mono = bytes_to_f32_mono(
+            &raw, 1, 4, wasapi::SampleType::Int, 32, 32,
+        );
+        assert_eq!(mono.len(), 1);
+        assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decodes_24_valid_bits_in_32_bit_container() {
+        // 0x400000 shifted into the high 24 bits of a 32-bit container.
+        let raw = (0x400000i32 << 8).to_le_bytes().to_vec();
+        let mono = bytes_to_f32_mono(
+            &raw, 1, 4, wasapi::SampleType::Int, 32, 24,
+        );
+        assert_eq!(mono.len(), 1);
+        assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decodes_unsigned_8_bit_pcm() {
+        let raw = vec![192u8];
+        let mono = bytes_to_f32_mono(
+            &raw, 1, 1, wasapi::SampleType::Int, 8, 8,
+        );
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6);
     }
@@ -818,7 +862,9 @@ mod capture_tests {
     fn decodes_signed_24_bit_pcm() {
         // 0x400000 is one half of the positive 24-bit range.
         let raw = vec![0x00, 0x00, 0x40];
-        let mono = bytes_to_f32_mono(&raw, 1, 3);
+        let mono = bytes_to_f32_mono(
+            &raw, 1, 3, wasapi::SampleType::Int, 24, 24,
+        );
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6);
     }
