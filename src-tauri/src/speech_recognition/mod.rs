@@ -401,6 +401,19 @@ fn clean_whisper_text(raw: &str) -> String {
         return String::new();
     }
 
+    // VOXY currently supports Tamil, Sinhala, and English only. Whisper's
+    // multilingual auto-detection can occasionally hallucinate Chinese text
+    // from low-confidence audio; do not surface unsupported CJK output.
+    if trimmed.chars().any(|ch| {
+        matches!(
+            ch as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F
+        )
+    }) {
+        tracing::warn!("Discarding unsupported CJK text returned by Whisper");
+        return String::new();
+    }
+
     // Ignore noise annotations like [BLANK_AUDIO], (crickets chirping), (applause), etc.
     if (trimmed.starts_with('[') && trimmed.ends_with(']'))
         || (trimmed.starts_with('(') && trimmed.ends_with(')'))
