@@ -249,9 +249,8 @@ pub fn resample_frame(
     }
     let mut resampler = Resampler::new(frame.sample_rate, target_sample_rate, target_channels)
         .map_err(|_| AudioValidationError::InvalidSampleRate)?;
-    let mut output = resampler
-        .process(&frame.samples)
-        .map_err(|_| AudioValidationError::InvalidSampleRate)?;
+    let processed = resampler.process_frame(frame)?;
+    let mut output = processed.samples;
     output.extend(
         resampler
             .flush()
