@@ -93,8 +93,6 @@ pub struct SessionConfig {
     pub allowed_languages: Vec<String>,
     #[serde(default)]
     pub enable_diarization: bool,
-    #[serde(default = "default_true")]
-    pub show_partial_results: bool,
     #[serde(default)]
     pub microphone_device_id: Option<String>,
     #[serde(default)]
