@@ -36,7 +36,7 @@ export const filteredSegments = derived(
 
 /** Language segment counts derived from current transcript */
 export const languageBreakdown = derived(segments, ($segments) => {
-  const counts: Record<string, number> = { en: 0, si: 0, ta: 0, und: 0 };
+  const counts: Record<string, number> = { en: 0, si: 0, ta: 0, mul: 0, und: 0 };
   for (const s of $segments) {
     counts[s.language] = (counts[s.language] ?? 0) + 1;
   }
