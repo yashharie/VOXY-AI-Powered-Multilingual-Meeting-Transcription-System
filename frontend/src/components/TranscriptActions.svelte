@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { segments, sessionName, meetingPlatform, targetLanguage } from '../lib/sessionStore';
+  import { segments, sessionName, meetingPlatform, selectedLanguages } from '../lib/sessionStore';
   import { buildExportText, downloadTextFile } from '../lib/utils';
 
   let copyFeedback = '';
