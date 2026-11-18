@@ -11,7 +11,8 @@ use wasapi::{DeviceCollection, Direction};
 use crate::audio_capture::error::CaptureError;
 
 /// Whether a device is a playback (output) or recording (input) endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AudioDeviceKind {
     /// Playback endpoint — used for loopback capture.
     Output,
