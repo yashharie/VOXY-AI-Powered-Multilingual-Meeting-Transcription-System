@@ -79,6 +79,91 @@ impl SourceState {
     }
 }
 
+
+/// A bounded inference request. Keeping these separate from capture means Whisper
+/// cannot hold the WASAPI receive loop while CPU inference is running.
+struct InferenceJob {
+    audio: Vec<f32>,
+    start_ms: u64,
+    is_partial: bool,
+    source_name: &'static str,
+    queued_at: std::time::Instant,
+}
+
+async fn run_inference_queue(
+    mut rx: tokio::sync::mpsc::Receiver<InferenceJob>,
+    whisper: Arc<WhisperEngine>,
+    session: Session,
+    app: AppHandle,
+    diarizer: DiarizationEngine,
+    language_hint: String,
+    show_partial: bool,
+) {
+    let mut transcript_proc = TranscriptProcessor::new();
+
+    while let Some(job) = rx.recv().await {
+        let queue_wait_ms = job.queued_at.elapsed().as_millis() as u64;
+        let started = std::time::Instant::now();
+        let audio = job.audio;
+        let audio_ms = (audio.len() as u64 * 1000) / 16_000;
+        let start_ms = job.start_ms;
+        let whisper_clone = whisper.clone();
+        let lang = language_hint.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            whisper_clone.transcribe_window(&audio, 16_000, start_ms, &lang)
+        }).await;
+
+        let inference_ms = started.elapsed().as_millis() as u64;
+        tracing::info!(
+            source = job.source_name,
+            queue_wait_ms,
+            inference_ms,
+            audio_ms,
+            "Whisper inference timing"
+        );
+
+        match result {
+            Ok(Ok(results)) => {
+                for mut result in results {
+                    if result.text.trim().is_empty() {
+                        continue;
+                    }
+                    result.is_partial = job.is_partial;
+                    let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
+                    let segment = transcript_proc.build_segment(result.clone(), speaker);
+
+                    if result.is_partial && show_partial {
+                        crate::core::events::emit_transcript_segment(
+                            &app, &session.id(), segment,
+                        );
+                    } else if !result.is_partial {
+                        if transcript_proc.is_duplicate(&segment) {
+                            continue;
+                        }
+                        let idx = session.push_segment(segment.clone());
+                        if idx > 0 {
+                            let mut registered = segment.clone();
+                            registered.index = idx;
+                            transcript_proc.register(&registered);
+                            crate::core::events::emit_transcript_segment(
+                                &app, &session.id(), segment,
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, source = job.source_name, "Whisper transcription failed");
+                crate::core::events::emit_error(&app, Some(&session.id()), &error);
+            }
+            Err(error) => {
+                tracing::error!(error = %error, source = job.source_name, "Whisper inference task panicked");
+            }
+        }
+    }
+}
+
 /// Holds all running pipeline handles for a session.
 #[derive(Debug)]
 pub struct Pipeline {
@@ -184,12 +269,28 @@ impl Pipeline {
             );
         }
 
-        let mut transcript_proc = TranscriptProcessor::new();
         let language_hint = config.language_hint.clone();
         let show_partial = config.show_partial_results;
+        let inference_session = session.clone();
+        let inference_app = app.clone();
+        let inference_whisper = whisper.clone();
+        let inference_diarizer = shared_diarizer.clone();
 
         let worker = tokio::spawn(async move {
             tracing::info!(session_id = %session.id(), "Pipeline worker started");
+
+            // Bounded queue: capture keeps running while a separate worker performs
+            // CPU-heavy Whisper inference. Back-pressure is explicit and bounded.
+            let (inference_tx, inference_rx) = tokio::sync::mpsc::channel(4);
+            let inference_worker = tokio::spawn(run_inference_queue(
+                inference_rx,
+                inference_whisper,
+                inference_session,
+                inference_app,
+                inference_diarizer,
+                language_hint.clone(),
+                show_partial,
+            ));
 
             // Wall-clock anchor: set on the very first chunk received (either source).
             // All session-relative timestamps = chunk.timestamp_ms - first_wall_ms.
@@ -277,19 +378,19 @@ impl Pipeline {
                 }
 
                 // Transcription trigger:
-                //   A) natural pause ≥ 600 ms after at least 0.5 s of speech
+                //   A) natural pause ≥ 450 ms after at least 0.5 s of speech
                 //   B) buffer ≥ 8 s regardless of pauses (bounds memory / latency)
                 let min_speech_samples = 16_000 / 2; // 0.5 s
                 let should_transcribe =
                     (state.in_speech
-                        && state.silence_ms >= 600
+                        && state.silence_ms >= 450
                         && state.buffer.len() >= min_speech_samples)
-                    || state.buffer.len() >= 16_000 * 8;
+                    || state.buffer.len() >= 16_000 * 5;
 
                 if should_transcribe && !state.buffer.is_empty() {
                     let audio = std::mem::take(&mut state.buffer);
                     let trans_start_ms = state.window_start_ms;
-                    let is_continuous = state.in_speech && state.silence_ms < 600;
+                    let is_continuous = state.in_speech && state.silence_ms < 450;
 
                     if is_continuous {
                         // Retain ~0.8 s of overlap so context is not lost at window boundaries.
@@ -305,112 +406,48 @@ impl Pipeline {
                         state.silence_ms = 0;
                     }
 
-                    let whisper_clone = whisper.clone();
-                    let lang = language_hint.clone();
-                    let results = tokio::task::spawn_blocking(move || {
-                        whisper_clone.transcribe_window(&audio, 16_000, trans_start_ms, &lang)
-                    }).await;
-
-                    match results {
-                        Ok(Ok(segs)) => {
-                            if segs.is_empty() {
-                                tracing::debug!(
-                                    source = state.source_name,
-                                    start_ms = trans_start_ms,
-                                    "Whisper returned no segments (silence or no speech)"
-                                );
-                            }
-                            for mut result in segs {
-                                if result.text.trim().is_empty() {
-                                    continue;
-                                }
-                                if is_continuous {
-                                    result.is_partial = true;
-                                }
-
-                                let speaker = shared_diarizer
-                                    .assign_speaker(result.start_ms, result.end_ms);
-
-                                let segment = transcript_proc.build_segment(result.clone(), speaker);
-
-                                if result.is_partial && show_partial {
-                                    crate::core::events::emit_transcript_segment(
-                                        &app, &session.id(), segment,
-                                    );
-                                } else if !result.is_partial {
-                                    // Deduplication: skip segments that are near-identical
-                                    // to already-emitted content from an overlapping window.
-                                    if transcript_proc.is_duplicate(&segment) {
-                                        continue;
-                                    }
-                                    let idx = session.push_segment(segment.clone());
-                                    if idx > 0 {
-                                        let mut registered = segment.clone();
-                                        registered.index = idx;
-                                        transcript_proc.register(&registered);
-                                        crate::core::events::emit_transcript_segment(
-                                            &app, &session.id(), segment,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                error = %e,
-                                source = state.source_name,
-                                "Whisper transcription error"
-                            );
-                            crate::core::events::emit_error(&app, Some(&session.id()), &e);
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                source = state.source_name,
-                                "Whisper blocking task panicked"
-                            );
-                        }
+                    let job = InferenceJob {
+                        audio,
+                        start_ms: trans_start_ms,
+                        is_partial: is_continuous,
+                        source_name: state.source_name,
+                        queued_at: std::time::Instant::now(),
+                    };
+                    let queued = std::time::Instant::now();
+                    if inference_tx.send(job).await.is_err() {
+                        tracing::error!("Whisper inference queue stopped; transcript window could not be queued");
+                        break;
+                    }
+                    let queue_block_ms = queued.elapsed().as_millis() as u64;
+                    if queue_block_ms > 100 {
+                        tracing::warn!(queue_block_ms, "Inference queue is saturated; audio capture is applying bounded back-pressure");
                     }
                 }
             } // end while recv
 
-            // Flush remaining buffers when capture stream ends.
+            // Flush remaining audio through the same ordered inference queue.
             for state in [&lb_state, &mic_state] {
-                if state.buffer.len() < 8_000 {
+                if state.buffer.len() < 3_200 {
                     continue;
                 }
-                let audio = state.buffer.clone();
-                let whisper_clone = whisper.clone();
-                let lang = language_hint.clone();
-                let trans_start_ms = state.window_start_ms;
-                match tokio::task::spawn_blocking(move || {
-                    whisper_clone.transcribe_window(&audio, 16_000, trans_start_ms, &lang)
-                }).await {
-                    Ok(Ok(segs)) => {
-                        for result in segs {
-                            if result.text.trim().is_empty() { continue; }
-                            let speaker = shared_diarizer
-                                .assign_speaker(result.start_ms, result.end_ms);
-                            let segment = transcript_proc.build_segment(result, speaker);
-                            if transcript_proc.is_duplicate(&segment) { continue; }
-                            let idx = session.push_segment(segment.clone());
-                            if idx > 0 {
-                                let mut registered = segment.clone();
-                                registered.index = idx;
-                                transcript_proc.register(&registered);
-                                crate::core::events::emit_transcript_segment(
-                                    &app, &session.id(), segment,
-                                );
-                            }
-                        }
-                    }
-                    Ok(Err(e)) => tracing::warn!(error = %e, "Whisper flush error"),
-                    Err(e) => tracing::error!(error = %e, "Whisper flush task panicked"),
+                let job = InferenceJob {
+                    audio: state.buffer.clone(),
+                    start_ms: state.window_start_ms,
+                    is_partial: false,
+                    source_name: state.source_name,
+                    queued_at: std::time::Instant::now(),
+                };
+                if inference_tx.send(job).await.is_err() {
+                    tracing::error!("Whisper inference queue stopped before final audio flush");
                 }
             }
 
             let _ = lb_state.vad.finish();
             let _ = mic_state.vad.finish();
+            drop(inference_tx);
+            if let Err(error) = inference_worker.await {
+                tracing::error!(error = %error, "Inference worker did not shut down cleanly");
+            }
             tracing::info!(session_id = %session.id(), "Pipeline worker finished cleanly");
         });
 
