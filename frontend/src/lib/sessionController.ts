@@ -4,7 +4,7 @@
  * This is the single source of truth for session lifecycle management.
  *
  * Live transcription path (inside Tauri desktop app):
- *   initSession() → startSession() → Rust pipeline starts:
+ *   initSession() → subscribe to native events → startSession() → Rust pipeline:
  *     WASAPI capture → preprocessing → VAD → Whisper → events
  *   Frontend listens on voxy://transcript-segment Tauri events.
  *
@@ -25,6 +25,7 @@ import {
   clearSession,
   audioDevices,
   targetLanguage,
+  spokenLanguage,
 } from './sessionStore';
 import {
   initSession,
@@ -93,32 +94,36 @@ export async function handleStart(deviceId: string): Promise<void> {
   // ── Tauri desktop path ────────────────────────────────────────────────────
   if (isTauri()) {
     try {
-      // 1. Create the session on the Rust backend
+      // The spoken-language selector controls Whisper's input language.
+      // targetLanguage is only the desired output language; VOXY does not
+      // translate recognized speech, so it must not be passed to Whisper.
+      const languageHint = get(spokenLanguage);
+
+      // Clear the previous session before starting so early native events
+      // cannot be erased by a later clearSession() call.
+      clearSession();
+
+      // 1. Create the session using the language selected for spoken audio.
       const sessionInfo = await initSession({
         audio_source: 'Both',          // loopback + microphone
-        language_hint: 'auto',         // Whisper auto-detects Tamil/Sinhala/English
+        language_hint: languageHint,
         enable_diarization: false,
         show_partial_results: true,
         loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
       });
       _sessionId = sessionInfo.session_id;
 
-      // 2. Start the native pipeline — WASAPI capture → Whisper
-      await startSession(_sessionId);
-
-      // 3. Subscribe to transcript segments from the native pipeline
+      // 2. Subscribe BEFORE starting the native pipeline. Whisper can finish
+      //    its first window quickly enough that subscribing afterwards loses it.
       _unlistenTranscript = await onTranscriptSegment((segment: TranscriptSegment) => {
         const tgt = get(targetLanguage);
         if (tgt && tgt !== 'auto' && segment.language !== tgt) {
-          // If a specific output language is selected, still show the segment
-          // in its original language — translation is not done automatically.
-          // The segment is shown as-is; the language tag reflects the detected script.
+          // Keep the original recognized text. Output-language selection does
+          // not trigger translation; the language tag reflects the speech.
         }
         if (segment.is_partial) {
-          // Update or insert partial segment in-place
           upsertSegment(segment);
         } else {
-          // Remove any matching partial before appending the final
           segments.update(all => {
             const withoutPartial = all.filter(s => !(s.is_partial && s.id === segment.id));
             return [...withoutPartial, segment];
@@ -126,19 +131,26 @@ export async function handleStart(deviceId: string): Promise<void> {
         }
       });
 
-      // 4. Subscribe to backend error events
+      // Subscribe to errors before start_session for the same reason.
       _unlistenError = await onSessionError(({ code, message }) => {
         errorMessage.set(`[${code}] ${message}`);
       });
 
-      clearSession();
+      // 3. Start audio capture and transcription only after listeners are ready.
+      await startSession(_sessionId);
+
       resetMockSegments();
       sessionStatus.set('active');
       sessionStartTime.set(Date.now());
 
-      return; // Native path done — do not fall through to mock
+      return;
     } catch (err) {
-      // Native pipeline failed — show the error clearly, do not silently fall back
+      // Remove any listeners installed for a session that failed to start.
+      _unlistenTranscript?.();
+      _unlistenTranscript = null;
+      _unlistenError?.();
+      _unlistenError = null;
+
       const msg = String(err);
       errorMessage.set(
         msg.includes('model not found') || msg.includes('main.exe')
