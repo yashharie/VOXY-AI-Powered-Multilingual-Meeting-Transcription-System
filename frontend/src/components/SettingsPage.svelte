@@ -12,7 +12,7 @@
     { code: 'en', label: 'English' },
     { code: 'si', label: 'Sinhala' },
     { code: 'ta', label: 'Tamil' },
-  ];
+  ] as const;
 
   $: isSessionActive = $sessionStatus === 'active' || $sessionStatus === 'paused';
 
