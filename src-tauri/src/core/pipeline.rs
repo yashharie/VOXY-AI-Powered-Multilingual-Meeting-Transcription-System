@@ -100,7 +100,8 @@ async fn run_inference_queue(
     app: AppHandle,
     diarizer: DiarizationEngine,
     language_hint: String,
-    show_partial: bool,
+    allowed_languages: Vec<String>,
+    _show_partial: bool,
 ) {
     let mut transcript_proc = TranscriptProcessor::new();
 
@@ -112,17 +113,22 @@ async fn run_inference_queue(
         let start_ms = job.start_ms;
         let whisper_clone = whisper.clone();
         let lang = language_hint.clone();
+        let allowed = allowed_languages.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            whisper_clone.transcribe_window(&audio, 16_000, start_ms, &lang)
+            whisper_clone.transcribe_window_with_languages(
+                &audio, 16_000, start_ms, &lang, &allowed,
+            )
         }).await;
 
         let inference_ms = started.elapsed().as_millis() as u64;
+        let rtf = if audio_ms == 0 { 0.0 } else { inference_ms as f64 / audio_ms as f64 };
         tracing::info!(
             source = job.source_name,
             queue_wait_ms,
             inference_ms,
             audio_ms,
+            rtf,
             "Whisper inference timing"
         );
 
@@ -275,6 +281,7 @@ impl Pipeline {
         }
 
         let language_hint = config.language_hint.clone();
+        let allowed_languages = config.allowed_languages.clone();
         let show_partial = config.show_partial_results;
         let inference_session = session.clone();
         let inference_app = app.clone();
@@ -294,6 +301,7 @@ impl Pipeline {
                 inference_app,
                 inference_diarizer,
                 language_hint.clone(),
+                allowed_languages,
                 show_partial,
             ));
 
