@@ -1,14 +1,12 @@
 <script lang="ts">
   import {
     audioDevices,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
+    selectedLanguages,
     sessionStatus,
     appSettings,
   } from '../lib/sessionStore';
-
-  // Microphone — backend pending, no capture yet
-  let micDeviceId = 'none';
-  const micDevices = [{ id: 'none', name: 'None (not configured)' }];
 
   const LANGUAGE_OPTIONS = [
     { code: 'en', label: 'English' },
@@ -18,16 +16,11 @@
 
   $: isSessionActive = $sessionStatus === 'active' || $sessionStatus === 'paused';
 
-  function toggleLanguage(code: string) {
-    appSettings.update((s) => {
-      const has = s.preferredLanguages.includes(code);
-      if (has && s.preferredLanguages.length <= 1) return s; // keep at least one
-      return {
-        ...s,
-        preferredLanguages: has
-          ? s.preferredLanguages.filter((c) => c !== code)
-          : [...s.preferredLanguages, code],
-      };
+  function toggleLanguage(code: 'en' | 'si' | 'ta') {
+    selectedLanguages.update((current) => {
+      const has = current.includes(code);
+      if (has && current.length <= 1) return current;
+      return has ? current.filter((item) => item !== code) : [...current, code];
     });
   }
 </script>
@@ -40,16 +33,16 @@
 
     <div class="field">
       <label for="settings-device" class="field-label">
-        Output device (system audio capture)
+        System audio output
       </label>
       <select
         id="settings-device"
         class="field-select"
-        bind:value={$selectedDeviceId}
+        bind:value={$selectedOutputDeviceId}
         disabled={isSessionActive}
         aria-describedby="device-hint"
       >
-        {#each $audioDevices as device (device.id)}
+        {#each $audioDevices.filter((device) => device.kind === 'output') as device (device.id)}
           <option value={device.id}>
             {device.name}{device.is_default ? ' (default)' : ''}
           </option>
@@ -58,27 +51,29 @@
       {#if isSessionActive}
         <span id="device-hint" class="field-hint">Stop the session to change the audio device.</span>
       {:else}
-        <span id="device-hint" class="field-hint">WASAPI loopback capture. Changes take effect at the next session start.</span>
+        <span id="device-hint" class="field-hint">Captures meeting audio played through this Windows output device.</span>
       {/if}
     </div>
 
     <div class="field">
       <label for="settings-mic" class="field-label">
-        Microphone (optional)
+        Microphone input
       </label>
       <select
         id="settings-mic"
         class="field-select"
-        bind:value={micDeviceId}
+        bind:value={$selectedMicrophoneDeviceId}
         disabled={isSessionActive}
         aria-describedby="mic-hint"
       >
-        {#each micDevices as d (d.id)}
-          <option value={d.id}>{d.name}</option>
+        {#each $audioDevices.filter((device) => device.kind === 'input') as device (device.id)}
+          <option value={device.id}>
+            {device.name}{device.is_default ? ' (default)' : ''}
+          </option>
         {/each}
       </select>
       <span id="mic-hint" class="field-hint">
-        Microphone capture requires backend support. Not available until the audio engine is integrated.
+        Captures your voice separately from meeting playback.
       </span>
     </div>
   </section>
@@ -86,14 +81,14 @@
   <!-- ── Language preferences ─────────────────────────────────────── -->
   <section class="settings-section">
     <h2 class="section-heading">Languages</h2>
-    <p class="section-desc">Select the languages expected in this session. VOXY will transcribe all supported languages regardless of this setting, but this helps inform future model selection.</p>
+    <p class="section-desc">Select which spoken languages VOXY is allowed to transcribe. Changes apply to the next session.</p>
 
     <div class="checkbox-group" role="group" aria-label="Language selection">
       {#each LANGUAGE_OPTIONS as lang}
         <label class="checkbox-label">
           <input
             type="checkbox"
-            checked={$appSettings.preferredLanguages.includes(lang.code)}
+            checked={$selectedLanguages.includes(lang.code as 'en' | 'si' | 'ta')}
             on:change={() => toggleLanguage(lang.code)}
           />
           {lang.label}
