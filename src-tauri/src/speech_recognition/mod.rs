@@ -249,8 +249,8 @@ impl WhisperEngine {
             .arg("-l").arg(lang)
             .arg("-t").arg(thread_count.to_string())
             .arg("-oj")
-            .arg("-of").arg(&json_prefix)
-            // Do not pass textual "false" after boolean switches. whisper.cpp
+            .arg("-of").arg(&json_prefix);
+        // Do not pass textual "false" after boolean switches. whisper.cpp
             // parses these as flags, not key/value options. Omitting -nt preserves
             // segment timestamps; omitting -tr preserves the original spoken language.
 
