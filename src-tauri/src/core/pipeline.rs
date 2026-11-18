@@ -475,6 +475,20 @@ impl Pipeline {
 /// Search standard locations for a Whisper ggml model binary.
 /// Prefers smaller models for 8 GB RAM machines; larger models improve accuracy.
 fn find_whisper_model() -> Option<std::path::PathBuf> {
+    // Allow an explicit model path for reproducible accuracy/latency comparisons.
+    // The default remains the small-footprint Base multilingual model.
+    if let Ok(configured) = std::env::var("VOXY_WHISPER_MODEL") {
+        let path = std::path::PathBuf::from(configured);
+        if path.is_file() {
+            tracing::info!(model = %path.display(), "Using Whisper model from VOXY_WHISPER_MODEL");
+            return Some(path);
+        }
+        tracing::warn!(
+            model = %path.display(),
+            "VOXY_WHISPER_MODEL does not point to a file; falling back to model discovery"
+        );
+    }
+
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
