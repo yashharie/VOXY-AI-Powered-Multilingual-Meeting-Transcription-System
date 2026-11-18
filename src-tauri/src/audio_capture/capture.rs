@@ -791,7 +791,7 @@ mod capture_tests {
             raw.extend_from_slice(&bytes);
         }
         // bytes_per_frame = 6 × 4 = 24
-        let mono = bytes_to_f32_mono(&raw, 6, 24);
+        let mono = decode_float(&raw, 6, 24);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.6).abs() < 1e-6);
     }
@@ -811,7 +811,7 @@ mod capture_tests {
         raw.extend_from_slice(&f2_l.to_le_bytes());
         raw.extend_from_slice(&f2_r.to_le_bytes());
 
-        let mono = bytes_to_f32_mono(&raw, 2, 8);
+        let mono = decode_float(&raw, 2, 8);
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.6).abs() < 1e-6, "frame 0: got {}", mono[0]);
         assert!((mono[1] - 0.5).abs() < 1e-6, "frame 1: got {}", mono[1]);
