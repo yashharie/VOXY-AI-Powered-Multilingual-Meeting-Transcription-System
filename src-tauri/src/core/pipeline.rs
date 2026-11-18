@@ -423,12 +423,12 @@ impl Pipeline {
 
                 // Transcription trigger:
                 //   A) natural pause ≥ 450 ms after at least 0.5 s of speech
-                //   B) buffer ≥ 5 s regardless of pauses (bounds memory / latency)
+                //   B) buffer ≥ 3 s regardless of pauses (reduces first-result latency)
                 let min_speech_samples = 16_000 / 2; // 0.5 s
                 let should_transcribe = (state.in_speech
                     && state.silence_ms >= 450
                     && state.buffer.len() >= min_speech_samples)
-                    || state.buffer.len() >= 16_000 * 5;
+                    || state.buffer.len() >= 16_000 * 3;
 
                 if should_transcribe && !state.buffer.is_empty() {
                     tracing::info!(
@@ -443,8 +443,9 @@ impl Pipeline {
                     let is_continuous = state.in_speech && state.silence_ms < 450;
 
                     if is_continuous {
-                        // Retain ~0.8 s of overlap so context is not lost at window boundaries.
-                        let overlap = (16_000 * 4 / 5).min(audio.len());
+                        // Retain 0.5 s of overlap so boundary words keep context without
+                        // repeatedly decoding an unnecessarily large audio region.
+                        let overlap = (16_000 / 2).min(audio.len());
                         state
                             .buffer
                             .extend_from_slice(&audio[audio.len() - overlap..]);
