@@ -119,6 +119,7 @@ export async function handleStart(deviceId: string): Promise<void> {
       const sessionInfo = await initSession({
         audio_source: 'Both',          // loopback + microphone
         language_hint: languageHint,
+        allowed_languages: languages,
         enable_diarization: false,
         show_partial_results: true,
         loopback_device_id: deviceId !== 'default' ? deviceId : undefined,
