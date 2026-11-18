@@ -15,6 +15,7 @@ export function languageLabel(code: string): string {
     case 'si': return 'Sinhala';
     case 'ta': return 'Tamil';
     case 'en': return 'English';
+    case 'mul': return 'Mixed languages';
     default:   return 'Unknown';
   }
 }
