@@ -266,12 +266,22 @@ fn loopback_capture_loop(
     let channels = mix_format.get_nchannels() as usize;
     // bytes_per_frame = channels × (bits_per_sample / 8)
     let bytes_per_frame = mix_format.get_blockalign() as usize;
+    let sample_type = mix_format.get_subformat()
+        .map_err(|e| CaptureError::Wasapi(format!("get_subformat (loopback): {e}")))?;
+    let bits_per_sample = mix_format.get_bitspersample();
+    let valid_bits_per_sample = match mix_format.get_validbitspersample() {
+        0 => bits_per_sample,
+        bits => bits,
+    };
 
     debug!(
         device = device_name,
         rate = sample_rate_hz,
         channels = channels,
         bytes_per_frame = bytes_per_frame,
+        bits_per_sample,
+        valid_bits_per_sample,
+        sample_type = %sample_type,
         "Loopback mix format"
     );
 
@@ -366,8 +376,14 @@ fn loopback_capture_loop(
             match capture_client.read_from_device(bytes_per_frame, &mut raw_buf) {
                 Ok((frames_read, _flags)) if frames_read > 0 => {
                     let byte_count = frames_read as usize * bytes_per_frame;
-                    let samples =
-                        bytes_to_f32_mono(&raw_buf[..byte_count], channels, bytes_per_frame);
+                    let samples = bytes_to_f32_mono(
+                        &raw_buf[..byte_count],
+                        channels,
+                        bytes_per_frame,
+                        sample_type,
+                        bits_per_sample,
+                        valid_bits_per_sample,
+                    );
                     sample_buffer.extend_from_slice(&samples);
                 }
                 Ok(_) => break, // 0 frames — nothing to read right now
@@ -434,11 +450,22 @@ fn microphone_capture_loop(
     let sample_rate_hz = mix_format.get_samplespersec();
     let channels = mix_format.get_nchannels() as usize;
     let bytes_per_frame = mix_format.get_blockalign() as usize;
+    let sample_type = mix_format.get_subformat()
+        .map_err(|e| CaptureError::Wasapi(format!("get_subformat (mic): {e}")))?;
+    let bits_per_sample = mix_format.get_bitspersample();
+    let valid_bits_per_sample = match mix_format.get_validbitspersample() {
+        0 => bits_per_sample,
+        bits => bits,
+    };
 
     debug!(
         device = device_name,
         rate = sample_rate_hz,
         channels = channels,
+        bytes_per_frame = bytes_per_frame,
+        bits_per_sample,
+        valid_bits_per_sample,
+        sample_type = %sample_type,
         "Microphone mix format"
     );
 
@@ -520,8 +547,14 @@ fn microphone_capture_loop(
             match capture_client.read_from_device(bytes_per_frame, &mut raw_buf) {
                 Ok((frames_read, _flags)) if frames_read > 0 => {
                     let byte_count = frames_read as usize * bytes_per_frame;
-                    let samples =
-                        bytes_to_f32_mono(&raw_buf[..byte_count], channels, bytes_per_frame);
+                    let samples = bytes_to_f32_mono(
+                        &raw_buf[..byte_count],
+                        channels,
+                        bytes_per_frame,
+                        sample_type,
+                        bits_per_sample,
+                        valid_bits_per_sample,
+                    );
                     sample_buffer.extend_from_slice(&samples);
                 }
                 Ok(_) => break,
@@ -589,32 +622,45 @@ fn find_device_by_id_in_collection(
     Err(CaptureError::DeviceNotFound(target_id.to_string()))
 }
 
-/// Convert a raw byte buffer of interleaved f32 samples into a mono f32 Vec
-/// by down-mixing all channels to mono (arithmetic mean).
-///
-/// `bytes_per_frame` = channels × sizeof(f32).  The mix format used by WASAPI
-/// shared mode is typically 32-bit IEEE float; if the device uses a different
-/// format the bytes may not decode as valid f32, but that is then surfaced as
-/// bad audio data rather than a panic.
+/// Convert interleaved WASAPI samples to mono f32 using the actual endpoint
+/// sample format. A four-byte sample is not necessarily IEEE float: Windows
+/// devices can also return signed 32-bit PCM or 24 valid bits in a 32-bit slot.
 pub(crate) fn bytes_to_f32_mono(
     raw: &[u8],
     channels: usize,
     bytes_per_frame: usize,
+    sample_type: wasapi::SampleType,
+    bits_per_sample: u16,
+    valid_bits_per_sample: u16,
 ) -> Vec<f32> {
     if channels == 0 || bytes_per_frame == 0 || bytes_per_frame % channels != 0 {
         return Vec::new();
     }
 
-    let total_frames = raw.len() / bytes_per_frame;
     let bytes_per_channel = bytes_per_frame / channels;
+    let total_frames = raw.len() / bytes_per_frame;
+    let valid_bits = if valid_bits_per_sample == 0 {
+        bits_per_sample
+    } else {
+        valid_bits_per_sample
+    };
 
-    // WASAPI endpoints commonly expose IEEE f32, but some drivers use signed
-    // 16-bit or packed 24-bit PCM. Returning silence for those formats made a
-    // working microphone look like a VAD/transcription failure.
-    if !matches!(bytes_per_channel, 2 | 3 | 4) {
+    let supported = match sample_type {
+        wasapi::SampleType::Float => bits_per_sample == 32 && bytes_per_channel == 4,
+        wasapi::SampleType::Int => matches!(
+            (bits_per_sample, valid_bits, bytes_per_channel),
+            (8, 8, 1) | (16, 16, 2) | (24, 24, 3) |
+            (24, 24, 4) | (32, 24, 4) | (32, 32, 4)
+        ),
+    };
+
+    if !supported {
         warn!(
+            bits_per_sample,
+            valid_bits,
             bytes_per_channel,
-            "Unsupported WASAPI sample width; returning silence"
+            sample_type = %sample_type,
+            "Unsupported WASAPI sample format; captured chunk will be silent"
         );
         return vec![0.0f32; total_frames];
     }
@@ -624,35 +670,56 @@ pub(crate) fn bytes_to_f32_mono(
         let frame_start = frame_idx * bytes_per_frame;
         let mut sum = 0.0f32;
 
-        for ch in 0..channels {
-            let offset = frame_start + ch * bytes_per_channel;
-            let sample = match bytes_per_channel {
-                2 => {
-                    let bytes: [u8; 2] = raw[offset..offset + 2]
-                        .try_into()
-                        .unwrap_or([0u8; 2]);
-                    i16::from_le_bytes(bytes) as f32 / 32768.0
-                }
-                3 => {
-                    let b0 = raw[offset] as i32;
-                    let b1 = raw[offset + 1] as i32;
-                    let b2 = raw[offset + 2] as i32;
-                    let packed = b0 | (b1 << 8) | (b2 << 16);
-                    let signed = if (packed & 0x0080_0000) != 0 {
-                        packed | !0x00FF_FFFF
-                    } else {
-                        packed
-                    };
-                    signed as f32 / 8_388_608.0
-                }
-                4 => {
+        for channel in 0..channels {
+            let offset = frame_start + channel * bytes_per_channel;
+            let sample = match sample_type {
+                wasapi::SampleType::Float => {
                     let bytes: [u8; 4] = raw[offset..offset + 4]
                         .try_into()
                         .unwrap_or([0u8; 4]);
                     let value = f32::from_le_bytes(bytes);
                     if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 }
                 }
-                _ => unreachable!(),
+                wasapi::SampleType::Int => match (bits_per_sample, valid_bits, bytes_per_channel) {
+                    (8, 8, 1) => (raw[offset] as f32 - 128.0) / 128.0,
+                    (16, 16, 2) => {
+                        let bytes: [u8; 2] = raw[offset..offset + 2]
+                            .try_into()
+                            .unwrap_or([0u8; 2]);
+                        i16::from_le_bytes(bytes) as f32 / 32768.0
+                    }
+                    (24, 24, 3) | (24, 24, 4) => {
+                        let packed = if bytes_per_channel == 3 {
+                            raw[offset] as i32
+                                | ((raw[offset + 1] as i32) << 8)
+                                | ((raw[offset + 2] as i32) << 16)
+                        } else {
+                            let bytes: [u8; 4] = raw[offset..offset + 4]
+                                .try_into()
+                                .unwrap_or([0u8; 4]);
+                            i32::from_le_bytes(bytes) >> 8
+                        };
+                        let signed = if (packed & 0x0080_0000) != 0 {
+                            packed | !0x00FF_FFFF
+                        } else {
+                            packed
+                        };
+                        signed as f32 / 8_388_608.0
+                    }
+                    (32, 24, 4) => {
+                        let bytes: [u8; 4] = raw[offset..offset + 4]
+                            .try_into()
+                            .unwrap_or([0u8; 4]);
+                        (i32::from_le_bytes(bytes) >> 8) as f32 / 8_388_608.0
+                    }
+                    (32, 32, 4) => {
+                        let bytes: [u8; 4] = raw[offset..offset + 4]
+                            .try_into()
+                            .unwrap_or([0u8; 4]);
+                        i32::from_le_bytes(bytes) as f32 / 2_147_483_648.0
+                    }
+                    _ => 0.0,
+                },
             };
             sum += sample;
         }
