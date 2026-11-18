@@ -738,4 +738,21 @@ mod capture_tests {
         assert!((mono[0] - 0.6).abs() < 1e-6, "frame 0: got {}", mono[0]);
         assert!((mono[1] - 0.5).abs() < 1e-6, "frame 1: got {}", mono[1]);
     }
+
+    #[test]
+    fn decodes_signed_16_bit_pcm() {
+        let raw = 16_384i16.to_le_bytes().to_vec();
+        let mono = bytes_to_f32_mono(&raw, 1, 2);
+        assert_eq!(mono.len(), 1);
+        assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decodes_signed_24_bit_pcm() {
+        // 0x400000 is one half of the positive 24-bit range.
+        let raw = vec![0x00, 0x00, 0x40];
+        let mono = bytes_to_f32_mono(&raw, 1, 3);
+        assert_eq!(mono.len(), 1);
+        assert!((mono[0] - 0.5).abs() < 1e-6);
+    }
 }
