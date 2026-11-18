@@ -13,7 +13,7 @@ export const sessionStartTime = writable<number | null>(null);
 
 export type SupportedLanguage = 'en' | 'ta' | 'ta-IN' | 'ta-LK' | 'si' | 'auto';
 export const targetLanguage = writable<SupportedLanguage>('ta');
-export const spokenLanguage = writable<SupportedLanguage>('auto');
+export const spokenLanguage = writable<SupportedLanguage>('ta');
 
 // ── Transcript state ──────────────────────────────────────────────────────────
 
