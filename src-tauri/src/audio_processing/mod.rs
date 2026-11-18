@@ -175,6 +175,15 @@ impl AudioProcessor {
         }
     }
 
+    pub fn flush(&self) -> AppResult<Vec<f32>> {
+        let mut preprocessor = self.preprocessor.lock().map_err(|error| {
+            AppError::Internal(format!("audio preprocessor lock poisoned: {error}"))
+        })?;
+        preprocessor.flush_resampler().map_err(|error| {
+            AppError::InvalidConfig(format!("audio resampler flush failed: {error:?}"))
+        })
+    }
+
     pub fn process(&self, frame: CapturedAudioFrame) -> AppResult<ProcessedAudio> {
         let frame = AudioFrame::new(
             frame.sample_rate,
