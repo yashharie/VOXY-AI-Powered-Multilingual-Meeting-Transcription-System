@@ -2,7 +2,8 @@
   import {
     sessionStatus,
     audioDevices,
-    selectedDeviceId,
+    selectedOutputDeviceId,
+    selectedMicrophoneDeviceId,
     errorMessage,
   } from '../lib/sessionStore';
 
