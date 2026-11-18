@@ -88,6 +88,8 @@ struct Shared {
     consecutive_diar_failures: u32,
     samples_seen: u64,
     pending_segments: Vec<SpeechSegment>,
+    /// Completed audio chunks for standalone VAD instances whose diarizer is external.
+    pending_chunks: Vec<types::SpeechChunk>,
     stats: AnalysisStats,
 }
 
@@ -103,6 +105,11 @@ impl Shared {
             self.stats.speech_ms += chunk.end_ms().saturating_sub(chunk.start_ms());
             if self.pending_segments.len() < MAX_PENDING_SEGMENTS {
                 self.pending_segments.push(chunk.as_segment());
+            }
+            // A standalone VAD has no diarizer of its own. Retain the completed audio
+            // so the pipeline can forward it to the session-wide diarization engine.
+            if self.diar.is_none() && self.pending_chunks.len() < MAX_PENDING_SEGMENTS {
+                self.pending_chunks.push(chunk.clone());
             }
             let Some(diar) = self.diar.as_mut() else { continue };
             let t = Instant::now();
@@ -191,9 +198,15 @@ impl VadEngine {
         lock(&self.shared).finish()
     }
 
-    /// Speech regions completed since the last call (session-relative timestamps).
+    /// Speech regions completed since the last call (source-relative timestamps).
     pub fn take_speech_segments(&self) -> Vec<SpeechSegment> {
         std::mem::take(&mut lock(&self.shared).pending_segments)
+    }
+
+    /// Completed speech audio for an external, session-wide diarization engine.
+    /// Only standalone VAD instances (without a paired diarizer) populate this queue.
+    pub fn take_speech_chunks(&self) -> Vec<types::SpeechChunk> {
+        std::mem::take(&mut lock(&self.shared).pending_chunks)
     }
 
     pub fn stats(&self) -> AnalysisStats {
@@ -214,6 +227,44 @@ impl DiarizationEngine {
         let cfg = SpeakerAnalysisConfig::default();
         Self {
             shared: new_shared(Box::new(EnergyVad::new(cfg.vad)), None),
+        }
+    }
+
+    /// Feed a completed speech chunk from any independent source into this shared diarizer.
+    /// `timeline_offset_ms` maps that source's local VAD clock onto the session timeline.
+    pub fn process_speech_chunk(&self, mut chunk: types::SpeechChunk, timeline_offset_ms: u64) {
+        chunk.start_sample = chunk
+            .start_sample
+            .saturating_add(types::ms_to_samples(timeline_offset_ms));
+
+        let mut shared = lock(&self.shared);
+        let (result, speaker_count, elapsed_ms) = match shared.diar.as_mut() {
+            Some(diar) => {
+                let started = Instant::now();
+                let result = diar.process_chunk(&chunk);
+                let speaker_count = diar.speaker_count();
+                (result, speaker_count, started.elapsed().as_secs_f64() * 1000.0)
+            }
+            None => return,
+        };
+        shared.stats.speech_segments += 1;
+        shared.stats.speech_ms += chunk.end_ms().saturating_sub(chunk.start_ms());
+        shared.stats.diarization_time_ms += elapsed_ms;
+        match result {
+            Ok(()) => {
+                shared.consecutive_diar_failures = 0;
+                shared.stats.speakers = speaker_count;
+            }
+            Err(error) => {
+                shared.stats.diarization_errors += 1;
+                shared.consecutive_diar_failures += 1;
+                tracing::warn!(error = %error, "speaker diarization failed for an external speech source");
+                if shared.consecutive_diar_failures >= MAX_DIAR_FAILURES {
+                    tracing::error!("speaker diarization disabled for this session after repeated errors");
+                    shared.diar = None;
+                    shared.stats.diarization_disabled_after_errors = true;
+                }
+            }
         }
     }
 
@@ -268,6 +319,7 @@ fn new_shared(vad: Box<dyn VadBackend>, diar: Option<DiarState>) -> Arc<Mutex<Sh
         consecutive_diar_failures: 0,
         samples_seen: 0,
         pending_segments: Vec::new(),
+        pending_chunks: Vec::new(),
         stats,
     }))
 }
