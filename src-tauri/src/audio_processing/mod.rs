@@ -149,6 +149,15 @@ impl AudioPreprocessor {
         })
     }
 
+    pub fn flush_resampler(&mut self) -> Result<Vec<f32>, AudioValidationError> {
+        match &mut self.resampler {
+            Some(resampler) => resampler
+                .flush()
+                .map_err(|_| AudioValidationError::InvalidSampleRate),
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub fn flush(&mut self) -> Vec<f32> {
         self.buffer.drain_all()
     }
