@@ -130,13 +130,25 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
     { id: 'default-input', name: 'Default microphone', is_default: true, kind: 'input' },
   ];
 
+  // In the desktop app, use native WASAPI endpoint IDs. Browser MediaDeviceInfo
+  // IDs are opaque WebView identifiers and cannot be passed to the Rust WASAPI layer.
+  if (isTauri()) {
+    try {
+      const nativeResult = await invoke<IpcResult<AudioDevice[]>>('list_audio_devices');
+      const nativeDevices = unwrap(nativeResult);
+      return nativeDevices.length > 0 ? nativeDevices : fallback;
+    } catch (err) {
+      console.warn('Native WASAPI device enumeration failed:', err);
+      return fallback;
+    }
+  }
+
   if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
     return fallback;
   }
 
   try {
-    // Request permission first — this triggers the OS mic permission dialog in Tauri/WebView2
-    // and also causes enumerateDevices() to return real hardware labels.
+    // Browser-only development fallback. These IDs are not used by the native WASAPI backend.
     let stream: MediaStream | null = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
