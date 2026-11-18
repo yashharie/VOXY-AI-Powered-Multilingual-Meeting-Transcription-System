@@ -196,6 +196,20 @@ mod tests {
     }
 
     #[test]
+    fn detects_quieter_microphone_speech() {
+        let mut vad = EnergyVad::new(VadConfig::default());
+        let mut audio = quiet(300);
+        audio.extend(tone(220.0, 900, 0.008));
+        audio.extend(quiet(900));
+        let mut chunks = Vec::new();
+        for block in audio.chunks(800) {
+            chunks.extend(vad.accept(block).unwrap().completed);
+        }
+        chunks.extend(vad.flush().unwrap());
+        assert_eq!(chunks.len(), 1, "quiet but audible speech should pass the fallback VAD");
+    }
+
+    #[test]
     fn short_blips_are_ignored() {
         let mut vad = EnergyVad::new(VadConfig::default());
         let mut audio = quiet(500);
