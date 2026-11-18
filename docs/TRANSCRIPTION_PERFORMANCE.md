@@ -84,6 +84,10 @@ Do not combine all languages into one WER/CER number; report each language and c
 - WASAPI sample conversion accepts 32-bit float, signed 16-bit PCM, and packed 24-bit PCM. Other sample widths are still unsupported and must be confirmed from device diagnostics.
 - The application still needs real Windows measurements. Passing unit tests or compiling successfully is not evidence of transcription accuracy.
 
+## Preliminary smoke-test observation
+
+The earlier Windows smoke test processed five-second audio windows in approximately 9.11, 12.92, 13.61, and 39.36 seconds. Those observations correspond to rough RTF values of 1.82, 2.58, 2.72, and 7.87. They are not a controlled benchmark and do not establish WER/CER. They show that the current per-window CLI process is not real-time on the tested machine and that a persistent model runtime or faster model configuration is still required.
+
 ## Required report
 
 Attach a table with one row per test recording and include the model, thread count, language group, duration, WER, CER, first-result latency, final latency, inference duration, RTF, peak CPU, peak RAM, and any dropped/late audio. Include hardware and software versions so results can be reproduced.
