@@ -84,6 +84,43 @@ fn turn_taking_produces_stable_labels_and_timestamps() {
 }
 
 #[test]
+fn independent_source_vads_feed_one_session_diarizer_with_offsets() {
+    let (_, diar) = engines(false);
+    let lb_vad = VadEngine::with_backend(Box::new(EnergyVad::new(VadConfig::default())));
+    let mic_vad = VadEngine::with_backend(Box::new(EnergyVad::new(VadConfig::default())));
+
+    // Loopback source: first speech begins 300 ms into the session.
+    let mut loopback = quiet(300);
+    loopback.extend(tone(200.0, 1500));
+    loopback.extend(quiet(1000));
+    feed(&lb_vad, &loopback);
+    lb_vad.finish().unwrap();
+    for chunk in lb_vad.take_speech_chunks() {
+        diar.process_speech_chunk(chunk, 0);
+    }
+
+    // Microphone has an independent VAD clock but begins 2 seconds into the session.
+    let mut microphone = quiet(300);
+    microphone.extend(tone(400.0, 1500));
+    microphone.extend(quiet(1000));
+    feed(&mic_vad, &microphone);
+    mic_vad.finish().unwrap();
+    for chunk in mic_vad.take_speech_chunks() {
+        diar.process_speech_chunk(chunk, 2000);
+    }
+
+    let intervals = diar.intervals();
+    assert_eq!(intervals.len(), 2, "{intervals:?}");
+    assert_eq!(
+        intervals.iter().map(|iv| iv.speaker.as_str()).collect::<Vec<_>>(),
+        ["Speaker 1", "Speaker 2"],
+        "{intervals:?}"
+    );
+    assert!((intervals[0].start_ms as i64 - 300).abs() < 100, "{intervals:?}");
+    assert!((intervals[1].start_ms as i64 - 2300).abs() < 100, "{intervals:?}");
+}
+
+#[test]
 fn silence_is_not_speech() {
     let (vad, diar) = engines(false);
     for block in quiet(3000).chunks(320) {
