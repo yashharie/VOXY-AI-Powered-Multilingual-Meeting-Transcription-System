@@ -5,6 +5,16 @@
   let copyFeedback = '';
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[char] ?? char);
+  }
+
   async function handleCopy() {
     if ($segments.length === 0) return;
     const text = buildExportText($segments);
@@ -27,15 +37,15 @@
 
   function handleExportPdf() {
     if ($segments.length === 0) return;
-    const name = $sessionName || 'Meeting Session';
-    const platform = $meetingPlatform || 'General';
-    const dateStr = new Date().toLocaleString();
+    const name = escapeHtml($sessionName || 'Meeting Session');
+    const platform = escapeHtml($meetingPlatform || 'General');
+    const dateStr = escapeHtml(new Date().toLocaleString());
     const rows = $segments.map((s) => `
       <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0;">
         <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">
-          <strong style="color: #0284c7;">${s.speaker || 'Speaker'}</strong> • [${s.start_time.toFixed(1)}s - ${s.end_time.toFixed(1)}s] • <em>${(s.language || 'und').toUpperCase()}</em>
+          <strong style="color: #0284c7;">${escapeHtml(s.speaker || 'Speaker')}</strong> • [${s.start_time.toFixed(1)}s - ${s.end_time.toFixed(1)}s] • <em>${escapeHtml((s.language || 'und').toUpperCase())}</em>
         </div>
-        <div style="font-size: 13px; color: #0f172a; line-height: 1.5;">${s.text}</div>
+        <div style="font-size: 13px; color: #0f172a; line-height: 1.5;">${escapeHtml(s.text)}</div>
       </div>
     `).join('');
 
