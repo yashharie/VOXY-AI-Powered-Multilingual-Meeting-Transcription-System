@@ -4,7 +4,8 @@ import type { SessionStatus, TranscriptSegment, AudioDevice } from '../types';
 // ── Session state ─────────────────────────────────────────────────────────────
 
 export const sessionStatus = writable<SessionStatus>('idle');
-export const selectedDeviceId = writable<string>('default');
+export const selectedOutputDeviceId = writable<string>('default-output');
+export const selectedMicrophoneDeviceId = writable<string>('default-input');
 export const audioDevices = writable<AudioDevice[]>([]);
 export const errorMessage = writable<string | null>(null);
 export const meetingPlatform = writable<string>('None');
