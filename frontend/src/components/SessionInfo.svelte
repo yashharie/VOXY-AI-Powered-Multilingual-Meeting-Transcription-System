@@ -9,7 +9,7 @@
     sessionName,
     audioDevices,
     selectedDeviceId,
-    targetLanguage,
+    selectedLanguages,
   } from '../lib/sessionStore';
   import { formatTime } from '../lib/utils';
 
