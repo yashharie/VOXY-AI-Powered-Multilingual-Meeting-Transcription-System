@@ -67,8 +67,8 @@
     </div>
 
     <div class="info-row">
-      <dt>Target</dt>
-      <dd>{langLabels[$targetLanguage] ?? $targetLanguage.toUpperCase()}</dd>
+      <dt>Recognize</dt>
+      <dd>{$selectedLanguages.map((code) => langLabels[code]).join(', ')}</dd>
     </div>
 
     <div class="info-row">
