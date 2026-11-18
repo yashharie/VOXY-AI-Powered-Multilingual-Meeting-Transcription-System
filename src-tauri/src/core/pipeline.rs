@@ -489,9 +489,16 @@ impl Pipeline {
         let _ = self._capture.resume();
     }
 
-    pub async fn shutdown(self) {
+    /// Stop audio capture immediately and return the worker so queued Whisper
+    /// jobs can finish without blocking the Stop IPC command.
+    pub fn stop_capture(self) -> JoinHandle<()> {
         drop(self._capture);
-        let _ = self._worker.await;
+        self._worker
+    }
+
+    pub async fn shutdown(self) {
+        let worker = self.stop_capture();
+        let _ = worker.await;
         tracing::info!("Pipeline shut down cleanly");
     }
 }
