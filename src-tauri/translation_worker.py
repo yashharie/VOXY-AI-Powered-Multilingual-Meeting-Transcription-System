@@ -8,9 +8,17 @@ from pathlib import Path
 
 MODEL_REPO = "VoragoStudios/gct-m2m100-418m-ct2"
 MODEL_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VOXY" / "models" / "m2m100-418m-ct2"
+REQUIRED_MODEL_FILES = (
+    "model.bin",
+    "config.json",
+    "vocab.json",
+    "sentencepiece.bpe.model",
+)
+
 
 def log(message):
     print(message, file=sys.stderr, flush=True)
+
 
 def ensure_dependencies():
     try:
@@ -21,32 +29,36 @@ def ensure_dependencies():
     except ImportError:
         log("Installing local translation runtime (first launch only)...")
         # stdout is reserved exclusively for JSON Lines responses consumed by Rust.
-        # pip writes progress/status output to stdout by default, which corrupts that
-        # protocol and makes Rust attempt to parse installer text as JSON.
         pip_env = os.environ.copy()
         pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
         pip_env["PIP_PROGRESS_BAR"] = "off"
         subprocess.check_call(
             [
                 sys.executable, "-m", "pip", "install", "--upgrade",
-                "ctranslate2", "transformers<5", "sentencepiece", "huggingface_hub"
+                "--disable-pip-version-check", "--progress-bar", "off",
+                "ctranslate2>=4.4,<5",
+                "transformers>=4.40,<5",
+                "sentencepiece>=0.2,<1",
+                "huggingface_hub>=0.23,<1",
             ],
             stdout=sys.stderr,
             stderr=sys.stderr,
             env=pip_env,
         )
 
+
 def load_engine():
     import ctranslate2
     from huggingface_hub import snapshot_download
-    # Load the concrete tokenizer class directly. AutoTokenizer first tries to
-    # infer a Transformers model config from config.json, but this directory
-    # contains a CTranslate2 config rather than a Transformers model config.
     from transformers import M2M100Tokenizer
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    if not (MODEL_DIR / "model.bin").is_file():
-        log("Downloading VOXY translation model (~500 MB, first use only)...")
+    model_is_complete = all(
+        (MODEL_DIR / name).is_file() and (MODEL_DIR / name).stat().st_size > 0
+        for name in REQUIRED_MODEL_FILES
+    )
+    if not model_is_complete:
+        log("Downloading VOXY translation model and tokenizer assets (first use only)...")
         snapshot_download(
             repo_id=MODEL_REPO,
             local_dir=str(MODEL_DIR),
@@ -54,46 +66,118 @@ def load_engine():
                 "model.bin", "config.json", "shared_vocabulary.json",
                 "sentencepiece.bpe.model", "tokenizer.json",
                 "tokenizer_config.json", "special_tokens_map.json",
-                "vocab.json", "generation_config.json"
+                "vocab.json", "generation_config.json",
             ],
         )
-    log("Loading M2M100 INT8 translation model...")
-    tokenizer = M2M100Tokenizer.from_pretrained(str(MODEL_DIR), local_files_only=True)
+
+    missing = [name for name in REQUIRED_MODEL_FILES if not (MODEL_DIR / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            "Translation model download is incomplete; missing: " + ", ".join(missing)
+        )
+
+    # This repository is a CTranslate2 conversion. Its tokenizer_config.json
+    # deliberately has no Transformers tokenizer_class and its config.json is
+    # a CTranslate2 config, not an AutoConfig model config. Construct the
+    # tokenizer from the two actual assets instead of invoking AutoTokenizer
+    # or from_pretrained's config discovery.
+    tokenizer = M2M100Tokenizer(
+        vocab_file=str(MODEL_DIR / "vocab.json"),
+        spm_file=str(MODEL_DIR / "sentencepiece.bpe.model"),
+        src_lang="en",
+    )
     translator = ctranslate2.Translator(
-        str(MODEL_DIR), device="cpu", compute_type="int8",
-        inter_threads=1, intra_threads=2
+        str(MODEL_DIR),
+        device="cpu",
+        compute_type="int8",
+        inter_threads=1,
+        intra_threads=2,
     )
     return tokenizer, translator
 
-def detect_script_language(text, fallback="en"):
-    counts = {"ta": 0, "si": 0, "en": 0}
-    for ch in text:
-        code = ord(ch)
-        if 0x0B80 <= code <= 0x0BFF:
-            counts["ta"] += 1
-        elif 0x0D80 <= code <= 0x0DFF:
-            counts["si"] += 1
-        elif ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
-            counts["en"] += 1
-    best = max(counts, key=counts.get)
-    return best if counts[best] else (fallback if fallback in counts else "en")
 
-def translate_text(text, source, target, tokenizer, translator):
+def script_language(character):
+    code = ord(character)
+    if 0x0B80 <= code <= 0x0BFF:
+        return "ta"
+    if 0x0D80 <= code <= 0x0DFF:
+        return "si"
+    if character.isascii() and character.isalpha():
+        return "en"
+    if 0x00C0 <= code <= 0x024F and character.isalpha():
+        return "en"
+    return None
+
+
+def split_by_script(text, fallback="en"):
+    """Split code-switched text into script-homogeneous spans, preserving punctuation."""
+    spans = []
+    pending = ""
+    current_language = None
+    current_text = ""
+
+    for character in text:
+        language = script_language(character)
+        if language is None:
+            if current_language is None:
+                pending += character
+            else:
+                current_text += character
+            continue
+
+        if current_language is None:
+            current_language = language
+            current_text = pending + character
+            pending = ""
+        elif language == current_language:
+            current_text += character
+        else:
+            spans.append((current_language, current_text))
+            current_language = language
+            current_text = character
+
+    if current_language is not None:
+        spans.append((current_language, current_text + pending))
+    elif pending.strip():
+        spans.append((fallback if fallback in ("en", "ta", "si") else "en", pending))
+
+    return spans
+
+
+def translate_span(text, source, target, tokenizer, translator):
     if not text.strip() or source == target:
         return text
-    if source not in ("en", "ta", "si"):
-        source = detect_script_language(text, source)
+
     tokenizer.src_lang = source
     encoded = tokenizer(text, return_tensors=None)
     source_tokens = tokenizer.convert_ids_to_tokens(encoded["input_ids"])
     target_token = tokenizer.lang_code_to_token[target]
     result = translator.translate_batch(
-        [source_tokens], target_prefix=[[target_token]],
-        beam_size=2, max_decoding_length=256
+        [source_tokens],
+        target_prefix=[[target_token]],
+        beam_size=2,
+        max_decoding_length=256,
     )[0]
     target_tokens = result.hypotheses[0][1:]
     target_ids = tokenizer.convert_tokens_to_ids(target_tokens)
-    return tokenizer.decode(target_ids, skip_special_tokens=True).strip()
+    translated = tokenizer.decode(target_ids, skip_special_tokens=True).strip()
+    return translated if translated else text
+
+
+def translate_text(text, source, target, tokenizer, translator):
+    if not text.strip() or source == target:
+        return text
+    fallback = source if source in ("en", "ta", "si") else "en"
+    spans = split_by_script(text, fallback)
+    if not spans:
+        return text
+    # A mixed-script segment cannot be translated reliably with one language
+    # prefix. Translate each Tamil/Sinhala/Latin span with its own source code.
+    return "".join(
+        translate_span(span, span_language, target, tokenizer, translator)
+        for span_language, span in spans
+    )
+
 
 def main():
     try:
@@ -116,12 +200,14 @@ def main():
                 str(request.get("text", "")),
                 str(request.get("source", "en")),
                 str(request.get("target", "en")),
-                tokenizer, translator
+                tokenizer,
+                translator,
             )
             print(json.dumps({"translation": translated}, ensure_ascii=False), flush=True)
         except Exception as exc:
             log("Translation request failed: " + str(exc))
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), flush=True)
+
 
 if __name__ == "__main__":
     main()
