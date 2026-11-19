@@ -56,6 +56,8 @@ pub struct WhisperEngine {
     is_loaded: bool,
     /// Path to whisper.cpp CLI binary (main.exe or whisper-cli.exe)
     cli_path: Option<PathBuf>,
+    /// Optional Silero VAD model supported by newer whisper.cpp CLI builds.
+    vad_model_path: Option<PathBuf>,
 }
 
 impl WhisperEngine {
@@ -74,9 +76,14 @@ impl WhisperEngine {
             ));
         }
 
+        let vad_model_path = cli_path
+            .as_deref()
+            .and_then(|cli| Self::prepare_vad_model(cli, &model_path));
+
         tracing::info!(
             model = ?model_path,
             cli = ?cli_path,
+            silero_vad = ?vad_model_path,
             "Whisper engine initialised successfully"
         );
 
@@ -84,6 +91,7 @@ impl WhisperEngine {
             model_path,
             is_loaded: true,
             cli_path,
+            vad_model_path,
         })
     }
 
@@ -93,6 +101,63 @@ impl WhisperEngine {
             model_path: PathBuf::new(),
             is_loaded: false,
             cli_path: None,
+            vad_model_path: None,
+        }
+    }
+
+    /// Download and enable the lightweight Silero model when this whisper.cpp
+    /// executable advertises its native VAD options. Older binaries remain usable.
+    fn prepare_vad_model(cli: &Path, whisper_model: &Path) -> Option<PathBuf> {
+        let help = std::process::Command::new(cli).arg("-h").output().ok()?;
+        let help_text = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&help.stdout),
+            String::from_utf8_lossy(&help.stderr)
+        );
+        if !help_text.contains("--vad") || !help_text.contains("--vad-model") {
+            tracing::info!("Whisper CLI does not support native Silero VAD; using confidence filters");
+            return None;
+        }
+
+        let model_dir = whisper_model.parent().unwrap_or_else(|| Path::new("models"));
+        let vad_path = model_dir.join("ggml-silero-v6.2.0.bin");
+        if vad_path.is_file()
+            && vad_path.metadata().map(|metadata| metadata.len() > 100_000).unwrap_or(false)
+        {
+            return Some(vad_path);
+        }
+
+        let download_path = vad_path.with_extension("bin.download");
+        let url = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
+        tracing::info!("Downloading the lightweight Silero VAD model (first launch only)");
+        let download = std::process::Command::new("curl.exe")
+            .args(["-L", "--fail", "--silent", "--show-error", url, "-o"])
+            .arg(&download_path)
+            .status();
+
+        match download {
+            Ok(status)
+                if status.success()
+                    && download_path.metadata().map(|metadata| metadata.len() > 100_000).unwrap_or(false) =>
+            {
+                if std::fs::rename(&download_path, &vad_path).is_ok() {
+                    tracing::info!(path = ?vad_path, "Silero VAD model is ready");
+                    Some(vad_path)
+                } else {
+                    let _ = std::fs::remove_file(&download_path);
+                    tracing::warn!("Could not move downloaded Silero VAD model into the models directory");
+                    None
+                }
+            }
+            Ok(status) => {
+                let _ = std::fs::remove_file(&download_path);
+                tracing::warn!(?status, "Silero VAD download failed; using confidence filters only");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(%error, "curl.exe unavailable; using confidence filters without Silero VAD");
+                None
+            }
         }
     }
 
@@ -291,8 +356,18 @@ impl WhisperEngine {
             // silence/entropy thresholds before accepting a segment.
             .arg("-sns")
             .arg("-et").arg("2.4")
-            .arg("-nth").arg("0.6")
-            .arg("-oj")
+            .arg("-nth").arg("0.6");
+        if let Some(vad_model) = &self.vad_model_path {
+            // Run neural voice activity detection inside each buffered window so
+            // music and non-speech audio are less likely to reach Whisper decoding.
+            cmd.arg("--vad")
+                .arg("-vm").arg(vad_model)
+                .arg("-vt").arg("0.5")
+                .arg("-vspd").arg("250")
+                .arg("-vsd").arg("250")
+                .arg("-vo").arg("0.10");
+        }
+        cmd.arg("-oj")
             .arg("-of").arg(&json_prefix);
         // Do not pass textual "false" after boolean switches. whisper.cpp
             // parses these as flags, not key/value options. Omitting -nt preserves
