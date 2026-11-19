@@ -281,6 +281,9 @@ impl WhisperEngine {
             .arg("-t").arg(thread_count.to_string())
             .arg("-bs").arg(beam_size.to_string())
             .arg("-bo").arg(best_of.to_string())
+            // Disable temperature fallback: on weak/silent windows, retrying at
+            // higher temperatures can turn uncertain audio into fluent hallucinations.
+            .arg("-nf")
             .arg("-oj")
             .arg("-of").arg(&json_prefix);
         // Do not pass textual "false" after boolean switches. whisper.cpp
