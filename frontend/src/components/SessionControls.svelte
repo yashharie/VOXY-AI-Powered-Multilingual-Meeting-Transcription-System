@@ -203,23 +203,6 @@
     cursor: pointer;
   }
 
-  .language-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.55rem 0.9rem;
-  }
-
-  .language-option {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.82rem;
-    color: var(--color-text);
-    cursor: pointer;
-  }
-
-  .language-option input { accent-color: var(--color-primary); }
-
   .field-help {
     margin: 0;
     font-size: 0.7rem;
