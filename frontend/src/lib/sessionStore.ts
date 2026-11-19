@@ -15,6 +15,8 @@ export const sessionStartTime = writable<number | null>(null);
 export type SupportedLanguage = 'en' | 'ta' | 'si';
 /** Languages enabled for recognition; all three are selected by default. */
 export const selectedLanguages = writable<SupportedLanguage[]>(['ta', 'si', 'en']);
+/** Single target language for live translation; source languages are auto-detected. */
+export const selectedTargetLanguage = writable<SupportedLanguage>('en');
 
 // ── Transcript state ──────────────────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ export const filteredSegments = derived(
     return $segments.filter(
       (s) =>
         s.text.toLowerCase().includes(q) ||
+        (s.translation ?? '').toLowerCase().includes(q) ||
         (s.speaker ?? '').toLowerCase().includes(q),
     );
   },
