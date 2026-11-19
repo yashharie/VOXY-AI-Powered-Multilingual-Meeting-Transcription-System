@@ -132,7 +132,7 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
         // Backend emits the same stable segment ID again when translation arrives.
         // Upsert updates that row instead of creating a duplicate transcript entry.
         upsertSegment(segment);
-        segments.update(all => all.sort((a, b) =>
+        segments.update(all => [...all].sort((a, b) =>
           a.start_time - b.start_time || a.id.localeCompare(b.id)
         ));
       });
