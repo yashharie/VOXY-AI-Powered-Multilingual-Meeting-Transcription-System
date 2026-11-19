@@ -1,8 +1,10 @@
 """End-to-end translation smoke test; downloads the real local model on first run."""
 import json
 import os
+import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -99,6 +101,12 @@ for item, line in zip(requests, lines):
         raise SystemExit(
             f"{item['name']} did not produce the target script: {translated!r}"
         )
+    if item["name"] == "English to Sinhala":
+        words = re.findall(r"\\w+", translated)
+        if len(words) >= 5 and max(Counter(words).values()) >= 4:
+            raise SystemExit(
+                f"{item['name']} produced repetitive output: {translated!r}"
+            )
     print(f"PASS: {item['name']} -> {translated}")
 
 print("All real-model translation smoke tests passed.")
