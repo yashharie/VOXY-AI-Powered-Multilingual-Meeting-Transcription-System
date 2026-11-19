@@ -1,6 +1,6 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
-  import { filteredSegments, searchQuery, segments, updateSegmentText, appSettings } from '../lib/sessionStore';
+  import { filteredSegments, searchQuery, segments, updateSegmentText, appSettings, selectedTargetLanguage } from '../lib/sessionStore';
   import { formatTime, languageClass, languageLabel } from '../lib/utils';
 
   let panelEl: HTMLElement;
@@ -130,7 +130,7 @@
         {#if segment.translation}
           <div class="translation-block">
             <span class="translation-label">Translation</span>
-            <p class="segment-translation">{segment.translation}</p>
+            <p class="segment-translation {languageClass($selectedTargetLanguage)}">{segment.translation}</p>
           </div>
         {/if}
         <div class="segment-footer">
