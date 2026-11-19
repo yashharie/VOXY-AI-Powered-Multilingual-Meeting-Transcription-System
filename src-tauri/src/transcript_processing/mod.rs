@@ -88,6 +88,7 @@ impl TranscriptProcessor {
         TranscriptSegment {
             index: 0, // assigned by Session::push_segment
             text: result.text,
+            translation: None,
             start_time,
             end_time,
             language,
@@ -246,6 +247,7 @@ mod tests {
         TranscriptSegment {
             index: 1,
             text: text.to_string(),
+            translation: None,
             start_time: start_s,
             end_time: end_s,
             language: "en".to_string(),
