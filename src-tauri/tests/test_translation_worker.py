@@ -70,7 +70,7 @@ class TranslationWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             [source for source, _ in translator.calls],
-            ["Good morning, ", "வணக்கம்! ", "ආයුබෝවන්."],
+            ["வணக்கம்!", "ආයුබෝවන්."],
         )
         self.assertEqual(
             [target for _, target in translator.calls],
