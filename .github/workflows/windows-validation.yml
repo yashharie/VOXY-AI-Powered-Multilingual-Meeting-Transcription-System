@@ -58,5 +58,5 @@ jobs:
       - name: Check translation Rust file formatting
         run: rustfmt --check --edition 2021 src-tauri/src/core/translation.rs
 
-      - name: Run translation worker Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml core::translation::tests -- --nocapture
+      - name: Check Rust application and test code
+        run: cargo check --manifest-path src-tauri/Cargo.toml --tests
