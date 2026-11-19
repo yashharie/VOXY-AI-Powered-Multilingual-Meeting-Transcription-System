@@ -68,6 +68,7 @@ export interface SessionConfig {
   language_hint: string;
   allowed_languages: string[];
   enable_diarization: boolean;
+  translation_target_language?: string;
   microphone_device_id?: string;
   loopback_device_id?: string;
 }
@@ -211,6 +212,7 @@ export async function onTranscriptSegment(
       const normalized: TranscriptSegment = {
         id: seg.id || `seg-${seg.index ?? Date.now()}`,
         text: (seg.text as string) ?? '',
+        translation: typeof seg.translation === 'string' ? seg.translation : null,
         start_time: typeof seg.start_time === 'number' ? seg.start_time : 0,
         end_time: typeof seg.end_time === 'number' ? seg.end_time : 0,
         // speaker is Option<String> from Rust — may be null
