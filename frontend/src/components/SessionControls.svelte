@@ -119,7 +119,7 @@
     <button
       class="btn btn-start"
       on:click={() => handleStart($selectedOutputDeviceId, $selectedMicrophoneDeviceId)}
-      disabled={!isIdle || isBusy || $selectedLanguages.length === 0}
+      disabled={!isIdle || isBusy}
       aria-label="Start transcription session"
     >▶ Start</button>
 
