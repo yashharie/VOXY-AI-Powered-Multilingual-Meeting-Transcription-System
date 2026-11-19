@@ -78,8 +78,18 @@ class TranslationWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             result,
-            "Good morning, <வணக்கம்! ><ආයුබෝවන්.>",
+            "Good morning, <வணக்கம்!> <ආයුබෝවන්.>",
         )
+
+    def test_translated_span_preserves_boundary_whitespace(self):
+        result = worker.translate_span(
+            "  வணக்கம்  ",
+            "ta",
+            "en",
+            FakeTokenizer(),
+            FakeTranslator(),
+        )
+        self.assertEqual(result, "  <வணக்கம்>  ")
 
     def test_same_language_returns_original_without_inference(self):
         translator = FakeTranslator()
