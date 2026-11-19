@@ -167,6 +167,8 @@ def translate_span(text, source, target, tokenizer, translator):
         [source_tokens],
         target_prefix=[[target_token]],
         beam_size=2,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
         max_decoding_length=256,
     )[0]
     target_tokens = result.hypotheses[0][1:]
