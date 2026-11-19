@@ -195,11 +195,17 @@ impl WhisperEngine {
 
         let candidates = [
             hint.to_path_buf(),
+            exe_dir.join("models").join("ggml-tiny.bin"),
             exe_dir.join("models").join("ggml-base.bin"),
+            exe_dir.join("ggml-tiny.bin"),
             exe_dir.join("ggml-base.bin"),
+            PathBuf::from("models/ggml-tiny.bin"),
             PathBuf::from("models/ggml-base.bin"),
+            PathBuf::from("src-tauri/models/ggml-tiny.bin"),
             PathBuf::from("src-tauri/models/ggml-base.bin"),
+            PathBuf::from("../models/ggml-tiny.bin"),
             PathBuf::from("../models/ggml-base.bin"),
+            PathBuf::from("../../models/ggml-tiny.bin"),
             PathBuf::from("../../models/ggml-base.bin"),
         ];
 
@@ -333,8 +339,8 @@ impl WhisperEngine {
             .filter(|value| (1..=32).contains(value))
             .unwrap_or_else(|| {
                 std::thread::available_parallelism()
-                    .map(|count| count.get().saturating_sub(1).clamp(1, 4))
-                    .unwrap_or(2)
+                    .map(|count| count.get().clamp(2, 8))
+                    .unwrap_or(4)
             });
 
         // Keep decoding cost configurable for CPU-only Windows devices.
@@ -343,13 +349,13 @@ impl WhisperEngine {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| (1..=5).contains(value))
-            .unwrap_or(3);
+            .unwrap_or(1); // beam=1 is greedy — fastest for real-time
 
         let best_of = std::env::var("VOXY_WHISPER_BEST_OF")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| (1..=5).contains(value))
-            .unwrap_or(3);
+            .unwrap_or(1); // best_of=1 reduces decoding passes
 
         let mut cmd = std::process::Command::new(cli);
         cmd.arg("-m").arg(&self.model_path)
