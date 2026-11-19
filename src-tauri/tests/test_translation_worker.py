@@ -33,7 +33,7 @@ class FakeTranslator:
 
     def translate_batch(self, source, target_prefix, beam_size, max_decoding_length):
         text = "".join(source[0])
-        language = self.calls.append((text, target_prefix[0][0]))
+        self.calls.append((text, target_prefix[0][0]))
         return [SimpleNamespace(hypotheses=[[
             target_prefix[0][0],
             f"<{text}>",
@@ -70,13 +70,16 @@ class TranslationWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             [source for source, _ in translator.calls],
-            ["Good morning, ", "வணக்கம்! ", "ஆயுபோவன."],
+            ["Good morning, ", "வணக்கம்! ", "ආයුබෝවන්."],
         )
         self.assertEqual(
             [target for _, target in translator.calls],
             ["__en__", "__en__", "__en__"],
         )
-        self.assertEqual(result, "<Good morning, ><வணக்கம்! ><ஆயுபோவன.>")
+        self.assertEqual(
+            result,
+            "<Good morning, ><வணக்கம்! ><ආයුබෝවන්.>",
+        )
 
     def test_same_language_returns_original_without_inference(self):
         translator = FakeTranslator()
