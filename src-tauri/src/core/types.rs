@@ -117,7 +117,7 @@ fn default_allowed_languages() -> Vec<String> {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            audio_source: AudioSource::Both,
+            audio_source: AudioSource::Microphone, // Both causes CPU overload on base model
             language_hint: "auto".to_string(),
             allowed_languages: default_allowed_languages(),
             enable_diarization: false,
