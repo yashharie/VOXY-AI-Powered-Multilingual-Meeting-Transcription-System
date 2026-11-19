@@ -127,6 +127,12 @@
           title="Double-click to edit"
           on:dblclick={() => startEdit(segment.id, segment.text)}
         >{#each splitHighlight(segment.text, $searchQuery) as chunk}<mark class:is-match={chunk.match}>{chunk.part}</mark>{/each}</p>
+        {#if segment.translation}
+          <div class="translation-block">
+            <span class="translation-label">Translation</span>
+            <p class="segment-translation">{segment.translation}</p>
+          </div>
+        {/if}
         <div class="segment-footer">
           <span class="edit-hint">Double-click to edit</span>
           <button
@@ -221,6 +227,29 @@
     border-radius: 999px;
     background: var(--color-idle-bg);
     color: var(--color-text-muted);
+  }
+
+  .translation-block {
+    border-top: 1px solid var(--color-border);
+    padding-top: 0.45rem;
+    margin-top: 0.15rem;
+  }
+
+  .translation-label {
+    display: block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--color-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.15rem;
+  }
+
+  .segment-translation {
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.6;
+    color: var(--color-text);
   }
 
   .segment-text {
