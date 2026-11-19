@@ -38,7 +38,7 @@ infer a model architecture from the CTranslate2 configuration.
 
 The Python unit tests verify punctuation-preserving script segmentation without
 downloading model files. The Windows validation workflow also downloads the real model
-and runs English-to-Tamil, Tamil-to-English, Sinhala-to-English, and mixed English/Tamil
+and runs English-to-Tamil, English-to-Sinhala, Tamil-to-English, Sinhala-to-English, and mixed English/Tamil
 translation smoke tests. Those tests verify that the model loads and returns text in
 the requested target script; they are not a substitute for a human translation-quality
 evaluation.
