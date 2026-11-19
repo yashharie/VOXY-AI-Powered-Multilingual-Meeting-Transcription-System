@@ -717,6 +717,19 @@ fn clean_whisper_text(raw: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
+
+    // Common Whisper hallucinations on silence/noise — discard these.
+    let lower = trimmed.to_lowercase();
+    let hallucinations = [
+        "thank you", "thanks", "thank you.", "thanks.", "thank you!",
+        "you", ".", "..", "...", "the", "a", "i", "oh", "ah", "um", "uh",
+        "bye", "bye.", "goodbye", "okay", "ok", "yes", "no",
+    ];
+    if hallucinations.iter().any(|h| lower.trim_matches('.').trim() == *h) {
+        tracing::debug!(text = %trimmed, "Discarding common Whisper hallucination");
+        return String::new();
+    }
+
     if is_repetitive_hallucination(trimmed) {
         tracing::debug!(text = %trimmed, "Discarding highly repetitive Whisper hypothesis");
         return String::new();
