@@ -10,6 +10,13 @@ struct WorkerProcess {
     stdout: BufReader<ChildStdout>,
 }
 
+impl Drop for WorkerProcess {
+    fn drop(&mut self) {
+        let _ = self._child.kill();
+        let _ = self._child.wait();
+    }
+}
+
 #[derive(Default)]
 pub struct TranslationWorker {
     process: Mutex<Option<WorkerProcess>>,
