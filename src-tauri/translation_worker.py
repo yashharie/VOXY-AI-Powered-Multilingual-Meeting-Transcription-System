@@ -190,7 +190,20 @@ def translate_text(text, source, target, tokenizer, translator):
     )
 
 
+def configure_stdio_utf8():
+    # Windows console defaults may be cp1252, which cannot write Tamil/Sinhala.
+    # The Rust side consumes JSON Lines as UTF-8, so force all worker streams
+    # to UTF-8 before reading requests or writing multilingual responses.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(
+                encoding="utf-8",
+                errors="replace" if stream is sys.stderr else "strict",
+            )
+
+
 def main():
+    configure_stdio_utf8()
     try:
         ensure_dependencies()
         tokenizer, translator = load_engine()
