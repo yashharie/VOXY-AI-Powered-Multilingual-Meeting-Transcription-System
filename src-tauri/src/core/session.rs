@@ -185,6 +185,14 @@ impl Session {
         inner.segment_counter
     }
 
+    /// Attach a translation to an already stored segment without changing its original text.
+    pub fn update_translation(&self, index: u32, translation: String) -> Option<TranscriptSegment> {
+        let mut inner = self.0.write();
+        let segment = inner.transcript.iter_mut().find(|segment| segment.index == index)?;
+        segment.translation = Some(translation);
+        Some(segment.clone())
+    }
+
     // ── Cleanup ───────────────────────────────────────────────────────────────
 
     /// Register a temp file path so it can be cleaned up on session end.
