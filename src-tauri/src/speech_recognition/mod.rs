@@ -127,6 +127,9 @@ impl WhisperEngine {
             return Some(vad_path);
         }
 
+        // Remove a previous partial/corrupt download before replacing it (Windows
+        // does not allow rename-over-existing-file).
+        let _ = std::fs::remove_file(&vad_path);
         let download_path = vad_path.with_extension("bin.download");
         let url = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
         tracing::info!("Downloading the lightweight Silero VAD model (first launch only)");
