@@ -109,6 +109,8 @@ fn start_worker() -> Result<WorkerProcess, String> {
             .args(&args)
             .arg("-u")
             .arg(&script)
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUTF8", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
