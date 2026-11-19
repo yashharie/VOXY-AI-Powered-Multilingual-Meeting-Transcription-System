@@ -22,7 +22,7 @@ def ensure_dependencies():
         log("Installing local translation runtime (first launch only)...")
         subprocess.check_call([
             sys.executable, "-m", "pip", "install", "--upgrade",
-            "ctranslate2", "transformers", "sentencepiece", "huggingface_hub"
+            "ctranslate2", "transformers<5", "sentencepiece", "huggingface_hub"
         ])
 
 def load_engine():
