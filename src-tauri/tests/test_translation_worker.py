@@ -74,7 +74,7 @@ class TranslationWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             [target for _, target in translator.calls],
-            ["__en__", "__en__", "__en__"],
+            ["__en__", "__en__"],
         )
         self.assertEqual(
             result,
