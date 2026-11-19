@@ -41,10 +41,15 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["English"],
+        "languages": [
+          "English"
+        ],
         "installMode": "currentUser"
       }
-    }
+    },
+    "resources": [
+      "translation_worker.py"
+    ]
   },
   "plugins": {
     "shell": {
