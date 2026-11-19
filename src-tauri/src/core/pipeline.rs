@@ -40,6 +40,7 @@ use crate::audio_capture::{AudioCaptureHandle, AudioSource, CaptureConfig, Devic
 use crate::audio_processing::AudioProcessor;
 use crate::core::error::{AppError, AppResult};
 use crate::core::session::Session;
+use crate::core::translation::TranslationWorker;
 use crate::core::types::{AudioSource as CoreAudioSource, SessionConfig};
 use crate::speaker_analysis::{
     create_engines, DiarizationEngine, SpeakerAnalysisConfig, VadEngine,
@@ -115,8 +116,10 @@ async fn run_inference_queue(
     diarizer: DiarizationEngine,
     language_hint: String,
     allowed_languages: Vec<String>,
+    translation_target_language: Option<String>,
 ) {
     let mut transcript_proc = TranscriptProcessor::new();
+    let translation_worker = Arc::new(TranslationWorker::new());
 
     while let Some(job) = rx.recv().await {
         let queue_wait_ms = job.queued_at.elapsed().as_millis() as u64;
@@ -175,7 +178,40 @@ async fn run_inference_queue(
                         // it as the stable segment ID for keyed rendering.
                         segment.index = idx;
                         transcript_proc.register(&segment);
-                        crate::core::events::emit_transcript_segment(&app, &session.id(), segment);
+                        crate::core::events::emit_transcript_segment(&app, &session.id(), segment.clone());
+
+                        // Translation runs independently of the capture and Whisper queues.
+                        // The original transcript is emitted immediately and never replaced.
+                        if let Some(target) = translation_target_language.clone() {
+                            let worker = translation_worker.clone();
+                            let translation_session = session.clone();
+                            let translation_app = app.clone();
+                            let original_text = segment.text.clone();
+                            let source_language = segment.language.clone();
+                            let segment_index = segment.index;
+                            tokio::spawn(async move {
+                                let translated = tokio::task::spawn_blocking(move || {
+                                    worker.translate(&original_text, &source_language, &target)
+                                }).await;
+                                match translated {
+                                    Ok(Ok(text)) => {
+                                        if let Some(updated) = translation_session.update_translation(segment_index, text) {
+                                            crate::core::events::emit_transcript_segment(
+                                                &translation_app, &translation_session.id(), updated
+                                            );
+                                        }
+                                    }
+                                    Ok(Err(error)) => tracing::warn!(
+                                        segment_index, error = %error,
+                                        "Live translation failed; original transcript retained"
+                                    ),
+                                    Err(error) => tracing::warn!(
+                                        segment_index, error = %error,
+                                        "Translation task failed; original transcript retained"
+                                    ),
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -297,6 +333,7 @@ impl Pipeline {
 
         let language_hint = config.language_hint.clone();
         let allowed_languages = config.allowed_languages.clone();
+        let translation_target_language = config.translation_target_language.clone();
         let inference_session = session.clone();
         let inference_app = app.clone();
         let inference_whisper = whisper.clone();
@@ -316,6 +353,7 @@ impl Pipeline {
                 inference_diarizer,
                 language_hint.clone(),
                 allowed_languages,
+                translation_target_language,
             ));
 
             // Wall-clock anchor: set on the very first chunk received (either source).
