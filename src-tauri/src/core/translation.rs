@@ -155,7 +155,11 @@ fn find_worker_script() -> Option<PathBuf> {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("translation_worker.py"));
             candidates.push(dir.join("resources").join("translation_worker.py"));
-            candidates.push(dir.join("..").join("resources").join("translation_worker.py"));
+            candidates.push(
+                dir.join("..")
+                    .join("resources")
+                    .join("translation_worker.py"),
+            );
         }
     }
     candidates.into_iter().find(|path| path.is_file())
