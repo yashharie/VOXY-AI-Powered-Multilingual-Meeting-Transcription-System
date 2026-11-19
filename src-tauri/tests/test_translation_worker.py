@@ -78,7 +78,7 @@ class TranslationWorkerTests(unittest.TestCase):
         )
         self.assertEqual(
             result,
-            "<Good morning, ><வணக்கம்! ><ආයුබෝවන්.>",
+            "Good morning, <வணக்கம்! ><ආයුබෝවන්.>",
         )
 
     def test_same_language_returns_original_without_inference(self):
