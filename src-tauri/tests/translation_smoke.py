@@ -17,6 +17,13 @@ requests = [
         "expected_range": (0x0B80, 0x0BFF),
     },
     {
+        "name": "English to Sinhala",
+        "text": "Good morning. The meeting will start in five minutes.",
+        "source": "en",
+        "target": "si",
+        "expected_range": (0x0D80, 0x0DFF),
+    },
+    {
         "name": "Tamil to English",
         "text": "வணக்கம். இன்று நீங்கள் எப்படி இருக்கிறீர்கள்?",
         "source": "ta",
