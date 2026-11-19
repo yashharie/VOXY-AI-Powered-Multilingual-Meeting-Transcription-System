@@ -364,6 +364,10 @@ impl WhisperEngine {
             // Suppress Whisper's non-speech token set and apply its standard
             // silence/entropy thresholds before accepting a segment.
             .arg("-sns")
+            // Force transcription mode — preserves the original spoken language
+            // (Tamil, Sinhala, English). Without this flag whisper.cpp defaults to
+            // translate mode for non-English audio, producing English output instead.
+            .arg("--task").arg("transcribe")
             .arg("-et").arg("2.4")
             .arg("-nth").arg("0.6");
         if let Some(vad_model) = &self.vad_model_path {
