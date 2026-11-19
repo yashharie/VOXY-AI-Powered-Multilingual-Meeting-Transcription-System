@@ -148,8 +148,19 @@ def translate_span(text, source, target, tokenizer, translator):
     if not text.strip() or source == target:
         return text
 
+    # Tokenizers may trim boundary whitespace. Keep it outside the model call
+    # so adjacent translated script spans remain separated in the final line.
+    leading_length = len(text) - len(text.lstrip())
+    trailing_length = len(text) - len(text.rstrip())
+    leading = text[:leading_length]
+    trailing = text[len(text) - trailing_length:] if trailing_length else ""
+    content_end = len(text) - trailing_length if trailing_length else len(text)
+    content = text[leading_length:content_end]
+    if not content:
+        return text
+
     tokenizer.src_lang = source
-    encoded = tokenizer(text, return_tensors=None)
+    encoded = tokenizer(content, return_tensors=None)
     source_tokens = tokenizer.convert_ids_to_tokens(encoded["input_ids"])
     target_token = tokenizer.lang_code_to_token[target]
     result = translator.translate_batch(
@@ -161,7 +172,7 @@ def translate_span(text, source, target, tokenizer, translator):
     target_tokens = result.hypotheses[0][1:]
     target_ids = tokenizer.convert_tokens_to_ids(target_tokens)
     translated = tokenizer.decode(target_ids, skip_special_tokens=True).strip()
-    return translated if translated else text
+    return leading + (translated if translated else content) + trailing
 
 
 def translate_text(text, source, target, tokenizer, translator):
