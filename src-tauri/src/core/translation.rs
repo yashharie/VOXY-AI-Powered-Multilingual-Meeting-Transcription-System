@@ -34,12 +34,12 @@ impl TranslationWorker {
         if !matches!(target, "en" | "ta" | "si") {
             return Err(format!("Unsupported translation target: {target}"));
         }
-        let source = if matches!(source, "en" | "ta" | "si") {
-            source.to_string()
-        } else {
-            detect_script_language(text).to_string()
-        };
-        if source == target {
+        // Keep "mul" intact: the Python worker splits a code-switched segment
+        // by Unicode script and translates each span independently. Collapsing
+        // it to the dominant script here would skip translation whenever that
+        // dominant script already matches the selected target language.
+        let source = resolve_source_language(source, text);
+        if source == target && source != "mul" {
             return Ok(text.to_string());
         }
 
@@ -119,6 +119,14 @@ fn find_worker_script() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn resolve_source_language(source: &str, text: &str) -> String {
+    if matches!(source, "en" | "ta" | "si" | "mul") {
+        source.to_string()
+    } else {
+        detect_script_language(text).to_string()
+    }
+}
+
 fn detect_script_language(text: &str) -> &'static str {
     let mut ta = 0usize;
     let mut si = 0usize;
@@ -132,4 +140,29 @@ fn detect_script_language(text: &str) -> &'static str {
     if ta >= si && ta >= en && ta > 0 { "ta" }
     else if si >= en && si > 0 { "si" }
     else { "en" }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_source_language;
+
+    #[test]
+    fn preserves_mixed_language_marker_for_script_aware_translation() {
+        assert_eq!(resolve_source_language("mul", "வணக்கம் hello"), "mul");
+    }
+
+    #[test]
+    fn keeps_known_single_language_tags() {
+        assert_eq!(resolve_source_language("en", "Hello"), "en");
+        assert_eq!(resolve_source_language("ta", "வணக்கம்"), "ta");
+        assert_eq!(resolve_source_language("si", "ආයුබෝවන්"), "si");
+    }
+
+    #[test]
+    fn detects_unknown_language_from_text_script() {
+        assert_eq!(resolve_source_language("und", "வணக்கம்"), "ta");
+        assert_eq!(resolve_source_language("und", "ආයුබෝවන්"), "si");
+        assert_eq!(resolve_source_language("und", "Hello"), "en");
+    }
 }
