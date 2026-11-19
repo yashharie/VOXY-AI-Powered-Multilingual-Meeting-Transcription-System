@@ -2,6 +2,8 @@
 export interface TranscriptSegment {
   id: string;
   text: string;
+  /** Optional live translation; original text remains unchanged. */
+  translation?: string | null;
   start_time: number;
   end_time: number;
   /** Speaker label from diarization, or null/undefined if diarization is off */
