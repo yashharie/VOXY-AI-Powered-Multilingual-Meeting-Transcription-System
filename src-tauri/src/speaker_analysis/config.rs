@@ -26,8 +26,10 @@ impl Default for VadConfig {
             min_speech_ms: 250,
             min_silence_ms: 500,
             max_speech_ms: 30_000,
-            energy_min_rms: 0.003,
-            energy_noise_factor: 1.5,
+            // Raised from 0.003 to 0.015 to reject speaker echo/acoustic bleed.
+            // Log showed echo RMS ~0.011 — direct speech typically 0.03+.
+            energy_min_rms: 0.015,
+            energy_noise_factor: 2.5,
         }
     }
 }
