@@ -252,6 +252,11 @@ impl Pipeline {
             CoreAudioSource::Microphone | CoreAudioSource::Both => true,
         };
 
+        let enable_loopback = match config.audio_source {
+            CoreAudioSource::Microphone => false,
+            CoreAudioSource::Loopback | CoreAudioSource::Both => true,
+        };
+
         let loopback_device = match &config.loopback_device_id {
             Some(id) if !id.is_empty() && id != "default" => DeviceSelection::ById(id.clone()),
             _ => DeviceSelection::Default,
@@ -375,6 +380,11 @@ impl Pipeline {
 
                 // Session-relative start of this chunk (independent of which source it is).
                 let chunk_session_start_ms = chunk.timestamp_ms.saturating_sub(first_wall_ms);
+
+                // Drop loopback chunks when audio source is Microphone-only.
+                if !enable_loopback && chunk.source == AudioSource::Loopback {
+                    continue;
+                }
 
                 // Route to per-source state. Microphone audio is NEVER suppressed.
                 let state = if chunk.source == AudioSource::Loopback {
