@@ -370,7 +370,7 @@ impl WhisperEngine {
                 .arg("-vsd").arg("250")
                 .arg("-vo").arg("0.10");
         }
-        cmd.arg("-oj")
+        cmd.arg("-ojf")
             .arg("-of").arg(&json_prefix);
         // Do not pass textual "false" after boolean switches. whisper.cpp
             // parses these as flags, not key/value options. Omitting -nt preserves
