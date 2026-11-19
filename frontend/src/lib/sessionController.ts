@@ -25,7 +25,7 @@ import {
   upsertSegment,
   clearSession,
   audioDevices,
-  selectedLanguages,
+  selectedTargetLanguage,
 } from './sessionStore';
 import {
   initSession,
@@ -107,14 +107,8 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
   // ── Tauri desktop path ────────────────────────────────────────────────────
   if (isTauri()) {
     try {
-      // A single selected language can be passed directly to Whisper.
-      // Multiple selected languages use auto-detection and are validated
-      // per transcript segment by the native speech-recognition module.
-      const languages = get(selectedLanguages);
-      if (languages.length === 0) {
-        throw new Error('Select at least one language to transcribe.');
-      }
-      const languageHint = languages.length === 1 ? languages[0] : 'auto';
+      // Translation mode: recognise all supported source languages automatically.
+      const targetLanguage = get(selectedTargetLanguage);
 
       // Clear the previous session before starting so early native events
       // cannot be erased by a later clearSession() call.
@@ -123,8 +117,9 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
       // 1. Create the session using the language selected for spoken audio.
       const sessionInfo = await initSession({
         audio_source: 'Both',          // loopback + microphone
-        language_hint: languageHint,
-        allowed_languages: languages,
+        language_hint: 'auto',
+        allowed_languages: ['ta', 'si', 'en'],
+        translation_target_language: targetLanguage,
         enable_diarization: false,
         loopback_device_id: outputDeviceId !== 'default-output' ? outputDeviceId : undefined,
         microphone_device_id: microphoneDeviceId !== 'default-input' ? microphoneDeviceId : undefined,
@@ -134,17 +129,12 @@ export async function handleStart(outputDeviceId: string, microphoneDeviceId: st
       // 2. Subscribe BEFORE starting the native pipeline. Whisper can finish
       //    its first window quickly enough that subscribing afterwards loses it.
       _unlistenTranscript = await onTranscriptSegment((segment: TranscriptSegment) => {
-        if (segment.is_partial) {
-          upsertSegment(segment);
-        } else {
-          // Keep previously recognized windows. The native pipeline commits each
-          // completed window and deduplicates its overlap before emitting it.
-          segments.update(all =>
-            [...all, segment].sort((a, b) =>
-              a.start_time - b.start_time || a.id.localeCompare(b.id)
-            )
-          );
-        }
+        // Backend emits the same stable segment ID again when translation arrives.
+        // Upsert updates that row instead of creating a duplicate transcript entry.
+        upsertSegment(segment);
+        segments.update(all => all.sort((a, b) =>
+          a.start_time - b.start_time || a.id.localeCompare(b.id)
+        ));
       });
 
       // Subscribe to errors before start_session for the same reason.
