@@ -102,7 +102,7 @@ for item, line in zip(requests, lines):
             f"{item['name']} did not produce the target script: {translated!r}"
         )
     if item["name"] == "English to Sinhala":
-        words = re.findall(r"\\w+", translated)
+        words = re.findall(r"\w+", translated)
         if len(words) >= 5 and max(Counter(words).values()) >= 4:
             raise SystemExit(
                 f"{item['name']} produced repetitive output: {translated!r}"
