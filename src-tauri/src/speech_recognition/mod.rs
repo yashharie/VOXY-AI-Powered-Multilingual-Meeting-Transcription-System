@@ -334,12 +334,14 @@ impl WhisperEngine {
         let mut results = Vec::new();
         let mut detected_window_language = lang.to_string();
         let mut json_parse_error: Option<String> = None;
+        let mut json_output_parsed = false;
 
         if json_file.is_file() {
             match std::fs::read_to_string(&json_file) {
                 Ok(content) => {
                     match serde_json::from_str::<WhisperJsonOutput>(&content) {
                         Ok(parsed) => {
+                            json_output_parsed = true;
                             // Window-level language (may be "auto" if language detection failed).
                             let window_lang = parsed
                                 .result
@@ -423,7 +425,7 @@ impl WhisperEngine {
         }
 
         // Fallback: parse timestamp lines from stdout if JSON failed or was empty.
-        if results.is_empty() {
+        if results.is_empty() && !json_output_parsed {
             let fallback_lang = parse_auto_detected_language(&stdout)
                 .filter(|l| l != "auto")
                 .unwrap_or_else(|| {
