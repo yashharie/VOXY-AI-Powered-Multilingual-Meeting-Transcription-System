@@ -31,7 +31,15 @@ class FakeTranslator:
     def __init__(self):
         self.calls = []
 
-    def translate_batch(self, source, target_prefix, beam_size, max_decoding_length):
+    def translate_batch(
+        self,
+        source,
+        target_prefix,
+        beam_size,
+        repetition_penalty,
+        no_repeat_ngram_size,
+        max_decoding_length,
+    ):
         text = "".join(source[0])
         self.calls.append((text, target_prefix[0][0]))
         return [SimpleNamespace(hypotheses=[[
