@@ -39,7 +39,10 @@ def ensure_dependencies():
 def load_engine():
     import ctranslate2
     from huggingface_hub import snapshot_download
-    from transformers import AutoTokenizer
+    # Load the concrete tokenizer class directly. AutoTokenizer first tries to
+    # infer a Transformers model config from config.json, but this directory
+    # contains a CTranslate2 config rather than a Transformers model config.
+    from transformers import M2M100Tokenizer
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     if not (MODEL_DIR / "model.bin").is_file():
@@ -55,7 +58,7 @@ def load_engine():
             ],
         )
     log("Loading M2M100 INT8 translation model...")
-    tokenizer = AutoTokenizer.from_pretrained(str(MODEL_DIR), local_files_only=True)
+    tokenizer = M2M100Tokenizer.from_pretrained(str(MODEL_DIR), local_files_only=True)
     translator = ctranslate2.Translator(
         str(MODEL_DIR), device="cpu", compute_type="int8",
         inter_threads=1, intra_threads=2
