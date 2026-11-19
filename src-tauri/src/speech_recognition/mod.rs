@@ -39,6 +39,9 @@ struct WhisperResultMeta {
 struct WhisperJsonSegment {
     offsets: Option<WhisperOffsets>,
     text: String,
+    no_speech_prob: Option<f64>,
+    avg_logprob: Option<f64>,
+    compression_ratio: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -284,6 +287,11 @@ impl WhisperEngine {
             // Disable temperature fallback: on weak/silent windows, retrying at
             // higher temperatures can turn uncertain audio into fluent hallucinations.
             .arg("-nf")
+            // Suppress Whisper's non-speech token set and apply its standard
+            // silence/entropy thresholds before accepting a segment.
+            .arg("-sns")
+            .arg("-et").arg("2.4")
+            .arg("-nth").arg("0.6")
             .arg("-oj")
             .arg("-of").arg(&json_prefix);
         // Do not pass textual "false" after boolean switches. whisper.cpp
@@ -345,6 +353,19 @@ impl WhisperEngine {
 
                             if let Some(segments) = parsed.transcription {
                                 for seg in segments {
+                                    if should_discard_whisper_segment(
+                                        seg.no_speech_prob,
+                                        seg.avg_logprob,
+                                        seg.compression_ratio,
+                                    ) {
+                                        tracing::debug!(
+                                            no_speech_prob = ?seg.no_speech_prob,
+                                            avg_logprob = ?seg.avg_logprob,
+                                            compression_ratio = ?seg.compression_ratio,
+                                            "Discarding low-confidence Whisper segment"
+                                        );
+                                        continue;
+                                    }
                                     let text = clean_whisper_text(&seg.text);
                                     if text.is_empty() {
                                         continue;
@@ -520,10 +541,57 @@ fn classify_segment_language(
     })
 }
 
+/// Apply Whisper's segment-level confidence checks before displaying a hypothesis.
+/// These are the same conservative signals used by Whisper's own decoding loop:
+/// silence probability combined with poor log probability, and pathological repetition.
+fn should_discard_whisper_segment(
+    no_speech_prob: Option<f64>,
+    avg_logprob: Option<f64>,
+    compression_ratio: Option<f64>,
+) -> bool {
+    if compression_ratio.is_some_and(|ratio| ratio > 2.4) {
+        return true;
+    }
+
+    matches!(
+        (no_speech_prob, avg_logprob),
+        (Some(no_speech), Some(logprob)) if no_speech > 0.6 && logprob < -1.0
+    )
+}
+
+/// Return true when a short hypothesis is dominated by the same repeated word.
+/// This catches common music/silence hallucinations without suppressing normal emphasis.
+fn is_repetitive_hallucination(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|ch| ch.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    if words.len() < 7 {
+        return false;
+    }
+
+    let mut counts = std::collections::HashMap::new();
+    for word in &words {
+        *counts.entry(word).or_insert(0usize) += 1;
+    }
+    counts.values().copied().max().unwrap_or(0) * 100 / words.len() >= 80
+}
+
 /// Filter out hallucinated tokens and special audio artifacts.
 fn clean_whisper_text(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        return String::new();
+    }
+    if is_repetitive_hallucination(trimmed) {
+        tracing::debug!(text = %trimmed, "Discarding highly repetitive Whisper hypothesis");
         return String::new();
     }
 
@@ -664,6 +732,23 @@ unsafe impl Sync for WhisperEngine {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_whisper_segments_using_confidence_metadata() {
+        assert!(should_discard_whisper_segment(Some(0.82), Some(-1.4), Some(1.1)));
+        assert!(should_discard_whisper_segment(Some(0.1), Some(-0.2), Some(2.8)));
+        assert!(!should_discard_whisper_segment(Some(0.1), Some(-0.2), Some(1.2)));
+        // Older whisper.cpp JSON may omit confidence fields; keep those segments
+        // rather than silently dropping otherwise valid speech.
+        assert!(!should_discard_whisper_segment(None, None, None));
+    }
+
+    #[test]
+    fn filters_extreme_single_word_repetition_but_keeps_normal_emphasis() {
+        assert!(is_repetitive_hallucination("yes yes yes yes yes yes yes yes yes"));
+        assert!(!is_repetitive_hallucination("Yes, yes, yes! I understand."));
+        assert!(!is_repetitive_hallucination("வணக்கம் நண்பர்களே, எப்படி இருக்கிறீர்கள்?"));
+    }
 
     #[test]
     fn test_clean_whisper_text_preserves_multilingual() {
