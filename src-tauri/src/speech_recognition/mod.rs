@@ -42,6 +42,12 @@ struct WhisperJsonSegment {
     no_speech_prob: Option<f64>,
     avg_logprob: Option<f64>,
     compression_ratio: Option<f64>,
+    tokens: Option<Vec<WhisperJsonToken>>,
+}
+
+#[derive(Deserialize)]
+struct WhisperJsonToken {
+    p: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -433,9 +439,15 @@ impl WhisperEngine {
 
                             if let Some(segments) = parsed.transcription {
                                 for seg in segments {
+                                    // whisper.cpp's full JSON exposes per-token probabilities.
+                                    // Derive average log probability when the CLI does not emit
+                                    // a segment-level avg_logprob field.
+                                    let avg_logprob = seg.avg_logprob.or_else(|| {
+                                        average_token_log_probability(seg.tokens.as_deref())
+                                    });
                                     if should_discard_whisper_segment(
                                         seg.no_speech_prob,
-                                        seg.avg_logprob,
+                                        avg_logprob,
                                         seg.compression_ratio,
                                     ) {
                                         tracing::debug!(
@@ -621,15 +633,31 @@ fn classify_segment_language(
     })
 }
 
+/// Derive segment log probability from the token probabilities in whisper.cpp's -ojf output.
+fn average_token_log_probability(tokens: Option<&[WhisperJsonToken]>) -> Option<f64> {
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for probability in tokens?.iter().filter_map(|token| token.p) {
+        if probability.is_finite() && probability > 0.0 {
+            total += probability.max(1e-12).ln();
+            count += 1;
+        }
+    }
+    (count > 0).then_some(total / count as f64)
+}
+
 /// Apply Whisper's segment-level confidence checks before displaying a hypothesis.
-/// These are the same conservative signals used by Whisper's own decoding loop:
-/// silence probability combined with poor log probability, and pathological repetition.
+/// Prefer Whisper's own silence metadata when available; otherwise reject only
+/// extremely low-confidence token sequences and pathological compression.
 fn should_discard_whisper_segment(
     no_speech_prob: Option<f64>,
     avg_logprob: Option<f64>,
     compression_ratio: Option<f64>,
 ) -> bool {
     if compression_ratio.is_some_and(|ratio| ratio > 2.4) {
+        return true;
+    }
+    if avg_logprob.is_some_and(|logprob| logprob < -1.5) {
         return true;
     }
 
@@ -812,6 +840,17 @@ unsafe impl Sync for WhisperEngine {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_average_log_probability_from_full_json_tokens() {
+        let tokens = vec![
+            WhisperJsonToken { p: Some(0.5) },
+            WhisperJsonToken { p: Some(0.25) },
+        ];
+        let average = average_token_log_probability(Some(&tokens)).unwrap();
+        assert!((average - (0.5f64.ln() + 0.25f64.ln()) / 2.0).abs() < 1e-10);
+        assert_eq!(average_token_log_probability(None), None);
+    }
 
     #[test]
     fn filters_whisper_segments_using_confidence_metadata() {
