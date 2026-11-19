@@ -97,6 +97,9 @@ pub struct SessionConfig {
     pub microphone_device_id: Option<String>,
     #[serde(default)]
     pub loopback_device_id: Option<String>,
+    /// Optional target language for live translation (en, ta, si).
+    #[serde(default)]
+    pub translation_target_language: Option<String>,
 }
 
 fn default_audio_source() -> AudioSource {
@@ -120,6 +123,7 @@ impl Default for SessionConfig {
             enable_diarization: false,
             microphone_device_id: None,
             loopback_device_id: None,
+            translation_target_language: None,
         }
     }
 }
@@ -144,6 +148,9 @@ pub struct TranscriptSegment {
     pub index: u32,
     /// Recognized text content.
     pub text: String,
+    /// Optional translated text; the original recognised text is never replaced.
+    #[serde(default)]
+    pub translation: Option<String>,
     /// Session-relative start offset in seconds.
     pub start_time: f64,
     /// Session-relative end offset in seconds.
