@@ -20,10 +20,21 @@ def ensure_dependencies():
         import huggingface_hub  # noqa: F401
     except ImportError:
         log("Installing local translation runtime (first launch only)...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--upgrade",
-            "ctranslate2", "transformers<5", "sentencepiece", "huggingface_hub"
-        ])
+        # stdout is reserved exclusively for JSON Lines responses consumed by Rust.
+        # pip writes progress/status output to stdout by default, which corrupts that
+        # protocol and makes Rust attempt to parse installer text as JSON.
+        pip_env = os.environ.copy()
+        pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        pip_env["PIP_PROGRESS_BAR"] = "off"
+        subprocess.check_call(
+            [
+                sys.executable, "-m", "pip", "install", "--upgrade",
+                "ctranslate2", "transformers<5", "sentencepiece", "huggingface_hub"
+            ],
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            env=pip_env,
+        )
 
 def load_engine():
     import ctranslate2
