@@ -7,7 +7,7 @@
     errorMessage,
     meetingPlatform,
     sessionName,
-    selectedLanguages,
+    selectedTargetLanguage,
   } from '../lib/sessionStore';
   import {
     handleStart,
@@ -97,28 +97,19 @@
   </div>
 
   <div class="field-row">
-    <span class="field-label">Languages to transcribe</span>
-    <div class="language-options" role="group" aria-label="Languages to transcribe">
+    <label for="translation-target-select" class="field-label">Translate conversation into</label>
+    <select
+      id="translation-target-select"
+      class="field-select"
+      bind:value={$selectedTargetLanguage}
+      disabled={!isIdle}
+      aria-label="Select translation target language"
+    >
       {#each LANGUAGE_OPTIONS as lang}
-        <label class="language-option">
-          <input
-            type="checkbox"
-            checked={$selectedLanguages.includes(lang.code)}
-            disabled={!isIdle}
-            on:change={(event) => {
-              const checked = (event.currentTarget as HTMLInputElement).checked;
-              selectedLanguages.update((current) =>
-                checked
-                  ? (current.includes(lang.code) ? current : [...current, lang.code])
-                  : current.filter((code) => code !== lang.code)
-              );
-            }}
-          />
-          <span>{lang.label}</span>
-        </label>
+        <option value={lang.code}>{lang.label}</option>
       {/each}
-    </div>
-    <p class="field-help">Select every language that may be spoken. VOXY keeps the original spoken text.</p>
+    </select>
+    <p class="field-help">VOXY automatically recognises English, Tamil, and Sinhala speech, including language switching, and displays the original plus the selected translation.</p>
   </div>
 
   <div class="divider"></div>
