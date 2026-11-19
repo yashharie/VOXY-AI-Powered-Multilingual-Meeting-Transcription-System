@@ -590,6 +590,17 @@ fn classify_segment_language(
 
     for ch in text.chars().filter(|ch| ch.is_alphabetic()) {
         let code = ch as u32;
+        // Skip CJK characters silently — Whisper sometimes hallucinates CJK
+        // when processing Tamil/Sinhala audio. Ignore them instead of rejecting
+        // the entire segment so Tamil/Sinhala text is not lost.
+        let is_cjk = matches!(
+            code,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F
+                | 0x3000..=0x303F | 0xFF00..=0xFFEF | 0x3040..=0x30FF
+        );
+        if is_cjk {
+            continue; // skip CJK, don't set unsupported_script
+        }
         let language = match code {
             0x0B80..=0x0BFF => Some("ta"),
             0x0D80..=0x0DFF => Some("si"),
@@ -660,16 +671,18 @@ fn should_discard_whisper_segment(
     avg_logprob: Option<f64>,
     compression_ratio: Option<f64>,
 ) -> bool {
-    if compression_ratio.is_some_and(|ratio| ratio > 2.4) {
+    // Only discard clearly bad segments. Tamil/Sinhala have lower confidence
+    // scores than English on ggml-base — be lenient to avoid false rejections.
+    if compression_ratio.is_some_and(|ratio| ratio > 2.8) {
         return true;
     }
-    if avg_logprob.is_some_and(|logprob| logprob < -1.5) {
+    if avg_logprob.is_some_and(|logprob| logprob < -2.0) {
         return true;
     }
 
     matches!(
         (no_speech_prob, avg_logprob),
-        (Some(no_speech), Some(logprob)) if no_speech > 0.6 && logprob < -1.0
+        (Some(no_speech), Some(logprob)) if no_speech > 0.8 && logprob < -1.2
     )
 }
 
@@ -711,14 +724,17 @@ fn clean_whisper_text(raw: &str) -> String {
 
     // VOXY currently supports Tamil, Sinhala, and English only. Whisper's
     // multilingual auto-detection can occasionally hallucinate Chinese text
-    // from low-confidence audio; do not surface unsupported CJK output.
-    if trimmed.chars().any(|ch| {
-        matches!(
-            ch as u32,
+    // from low-confidence audio. Strip CJK characters rather than discarding
+    // the entire segment — Tamil/Sinhala text may still be valid.
+    let cleaned: String = trimmed.chars().filter(|ch| {
+        !matches!(
+            *ch as u32,
             0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F
+                | 0x3000..=0x303F | 0xFF00..=0xFFEF | 0x3040..=0x30FF
         )
-    }) {
-        tracing::warn!("Discarding unsupported CJK text returned by Whisper");
+    }).collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
         return String::new();
     }
 
