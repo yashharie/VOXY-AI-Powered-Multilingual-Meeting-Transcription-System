@@ -55,7 +55,11 @@ payload = "".join(
 )
 
 env = os.environ.copy()
-env.setdefault("PYTHONUNBUFFERED", "1")
+env["PYTHONUNBUFFERED"] = "1"
+env["PYTHONIOENCODING"] = "utf-8"
+env["PYTHONUTF8"] = "1"
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 process = subprocess.Popen(
     [sys.executable, str(WORKER)],
     cwd=str(ROOT),
