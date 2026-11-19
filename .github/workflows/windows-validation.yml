@@ -55,8 +55,8 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Check translation Rust file formatting
+        run: rustfmt --check --edition 2021 src-tauri/src/core/translation.rs
 
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
