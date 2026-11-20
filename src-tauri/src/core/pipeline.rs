@@ -120,6 +120,7 @@ async fn run_inference_queue(
 ) {
     let mut transcript_proc = TranscriptProcessor::new();
     let translation_worker = Arc::new(TranslationWorker::new());
+    let whisper_worker = Arc::new(crate::core::whisper_worker::WhisperWorker::new());
 
     while let Some(job) = rx.recv().await {
         // Session stopped — discard remaining queued jobs immediately.
@@ -140,10 +141,33 @@ async fn run_inference_queue(
         let whisper_clone = whisper.clone();
         let lang = language_hint.clone();
         let allowed = allowed_languages.clone();
+        let ww = whisper_worker.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            whisper_clone
-                .transcribe_window_with_languages(&audio, 16_000, start_ms, &lang, &allowed)
+            // Try Python whisper worker (faster-whisper + Tamil fine-tuned model) first.
+            // Fall back to whisper.cpp CLI if the worker is unavailable.
+            match try_python_whisper(&ww, &audio, 16_000, start_ms, &lang) {
+                Ok(segments) => {
+                    tracing::debug!("Python whisper worker produced {} segments", segments.len());
+                    // Convert WorkerSegment to RecognitionResult
+                    let results: Vec<crate::speech_recognition::RecognitionResult> = segments
+                        .into_iter()
+                        .map(|seg| crate::speech_recognition::RecognitionResult {
+                            text: seg.text,
+                            language: seg.language,
+                            start_ms: start_ms + (seg.start * 1000.0) as u64,
+                            end_ms: start_ms + (seg.end * 1000.0) as u64,
+                            is_partial: false,
+                        })
+                        .collect();
+                    Ok(results)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Python whisper worker failed, falling back to whisper.cpp CLI");
+                    whisper_clone
+                        .transcribe_window_with_languages(&audio, 16_000, start_ms, &lang, &allowed)
+                }
+            }
         })
         .await;
 
@@ -680,6 +704,68 @@ fn find_whisper_model() -> Option<std::path::PathBuf> {
             .collect::<Vec<_>>()
     );
     None
+}
+
+/// Try to transcribe audio using the Python whisper worker (faster-whisper).
+/// Writes the audio samples to a temp WAV file and sends it to the worker.
+fn try_python_whisper(
+    worker: &crate::core::whisper_worker::WhisperWorker,
+    samples: &[f32],
+    sample_rate: u32,
+    start_ms: u64,
+    language: &str,
+) -> crate::core::error::AppResult<Vec<crate::core::whisper_worker::WorkerSegment>> {
+    // Write samples to a temp WAV file
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let wav_path = std::env::temp_dir()
+        .join(format!("voxy_fw_{}_{}.wav", std::process::id(), timestamp));
+
+    write_wav_f32(&wav_path, samples, sample_rate)?;
+
+    worker.transcribe(&wav_path, language, start_ms)
+}
+
+/// Write f32 samples as a 16-bit mono PCM WAV file.
+fn write_wav_f32(
+    path: &std::path::Path,
+    samples: &[f32],
+    sample_rate: u32,
+) -> crate::core::error::AppResult<()> {
+    use std::io::Write;
+    let num_samples = samples.len() as u32;
+    let byte_rate = sample_rate * 2;
+    let data_size = num_samples * 2;
+    let file_size = 36 + data_size;
+
+    let mut f = std::fs::File::create(path)
+        .map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+
+    // RIFF header
+    f.write_all(b"RIFF").map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&file_size.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(b"WAVE").map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    // fmt chunk
+    f.write_all(b"fmt ").map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&16u32.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&1u16.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?; // PCM
+    f.write_all(&1u16.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?; // mono
+    f.write_all(&sample_rate.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&byte_rate.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&2u16.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?; // block align
+    f.write_all(&16u16.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?; // bits per sample
+    // data chunk
+    f.write_all(b"data").map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    f.write_all(&data_size.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        f.write_all(&v.to_le_bytes()).map_err(|e| crate::core::error::AppError::IoError(e.to_string()))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
