@@ -122,6 +122,16 @@ async fn run_inference_queue(
     let translation_worker = Arc::new(TranslationWorker::new());
 
     while let Some(job) = rx.recv().await {
+        // Session stopped — discard remaining queued jobs immediately.
+        let state = session.state();
+        if matches!(state,
+            crate::core::types::SessionState::Stopping |
+            crate::core::types::SessionState::Stopped |
+            crate::core::types::SessionState::Error
+        ) {
+            tracing::debug!("Session stopping — discarding queued inference job, not sending to transcript");
+            continue;
+        }
         let queue_wait_ms = job.queued_at.elapsed().as_millis() as u64;
         let started = std::time::Instant::now();
         let audio = job.audio;
