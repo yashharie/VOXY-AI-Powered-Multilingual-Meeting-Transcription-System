@@ -157,10 +157,12 @@ def is_hallucination(text):
 
     # Word-level repetition (80%+ same word in 7+ words)
     words = lower.split()
-    if len(words) >= 7:
+    if len(words) >= 4:  # lowered from 7 to catch short repetitions like "நீ நீ நீ நீ"
         from collections import Counter
         counts = Counter(words)
-        if counts.most_common(1)[0][1] * 100 // len(words) >= 80:
+        most_common_count = counts.most_common(1)[0][1]
+        # If same word repeats 4+ times OR dominates 80%+ of words
+        if most_common_count >= 4 or (len(words) >= 7 and most_common_count * 100 // len(words) >= 80):
             return True
 
     # Phrase-level repetition (2-4 word phrase repeating 3+ times)

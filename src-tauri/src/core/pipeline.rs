@@ -198,7 +198,8 @@ async fn run_inference_queue(
                     // Treating the whole window as provisional caused all earlier speech
                     // to be discarded when the final window arrived at Stop.
                     result.is_partial = false;
-                    let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms);
+                    let speaker = diarizer.assign_speaker(result.start_ms, result.end_ms)
+                        .or_else(|| Some("Speaker 1".to_string())); // default label when diarization off
                     let mut segment = transcript_proc.build_segment(result.clone(), speaker);
 
                     if transcript_proc.is_duplicate(&segment) {
