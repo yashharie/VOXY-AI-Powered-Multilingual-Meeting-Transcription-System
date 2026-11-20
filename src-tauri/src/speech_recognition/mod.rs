@@ -327,21 +327,11 @@ impl WhisperEngine {
             .map_err(|e| AppError::Internal(format!("Failed to write temporary WAV: {e}")))?;
 
         let lang = if language_hint.is_empty() || language_hint == "auto" {
-            // When auto-detect with multiple allowed languages, Whisper on
-            // ggml-base mis-detects Tamil/Sinhala as English or Hindi.
-            // Try each allowed non-English language first, starting with Tamil
-            // (most common in our use case), then Sinhala.
-            if allowed_languages.iter().any(|l| l == "ta") {
-                "ta"
-            } else if allowed_languages.iter().any(|l| l == "si") {
-                "si"
-            } else {
-                "auto"
-            }
+            "auto"
         } else {
             language_hint
         };
-        tracing::info!(lang, "Whisper language selected");
+        tracing::info!(lang, "Whisper CLI language selected");
 
         // Keep CPU usage predictable on the target CPU-only Windows machines.
         // Override with VOXY_WHISPER_THREADS when benchmarking a specific device.

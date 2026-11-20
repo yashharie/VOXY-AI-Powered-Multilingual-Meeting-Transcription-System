@@ -96,8 +96,8 @@ def transcribe_chunk(model, wav_path, language, start_ms):
     if len(samples) < sample_rate // 5:  # < 200ms, skip
         return {"text": "", "language": language, "start_ms": start_ms, "end_ms": start_ms, "segments": []}
 
-    # Determine language hint
-    lang_hint = None if language == "auto" or not language else language
+    # Determine language hint — None means auto-detect
+    lang_hint = None if not language or language == "auto" else language
 
     segments_iter, info = model.transcribe(
         samples,
