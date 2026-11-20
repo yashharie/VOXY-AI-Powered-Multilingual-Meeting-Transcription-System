@@ -717,7 +717,7 @@ fn is_repetitive_hallucination(text: &str) -> bool {
         // often produce one long word with no spaces — check character repetition.
         let chars: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
         if chars.len() > 20 {
-            // Count max consecutive repetitions of any 3-char syllable.
+            // Count max consecutive repetitions of any single character.
             let mut max_repeat = 1;
             let mut current = 1;
             for i in 1..chars.len() {
@@ -733,36 +733,36 @@ fn is_repetitive_hallucination(text: &str) -> bool {
             if max_repeat > 10 {
                 return true;
             }
-            // Also check if text is mostly one repeated substring.
-            let lower = text.to_lowercase();
-            let len = lower.chars().count();
-            if len > 30 {
-                for chunk_size in [3, 5, 8] {
-                    let pattern: String = lower.chars().take(chunk_size).collect();
-                    if pattern.chars().all(|c| c.is_alphabetic()) {
-                        let mut count = 0;
-                        let mut idx = 0;
-                        let pattern_len = pattern.chars().count();
-                        let total_chars = lower.chars().count();
-                        while idx + pattern_len <= total_chars {
-                            let window: String = lower.chars().skip(idx).take(pattern_len).collect();
-                            if window == pattern {
-                                count += 1;
-                                idx += pattern_len;
-                            } else {
-                                break;
-                            }
-                        }
-                        if count > 5 && count * pattern_len > len / 2 {
-                            return true;
-                        }
-                    }
-                }
-            }
         }
         return false;
     }
 
+    // Phrase-level check: look for 2-4 word phrases that repeat 3+ times.
+    // This catches Tamil/Sinhala hallucinations like "நின்னுடன் அம்மாக நின்னுடன் அம்மாக..."
+    for phrase_len in 2..=4 {
+        if words.len() < phrase_len * 3 {
+            continue;
+        }
+        for start in 0..=(words.len() - phrase_len * 3) {
+            let phrase: Vec<&String> = words[start..start + phrase_len].iter().collect();
+            let mut count = 1;
+            let mut idx = start + phrase_len;
+            while idx + phrase_len <= words.len() {
+                let next: Vec<&String> = words[idx..idx + phrase_len].iter().collect();
+                if next == phrase {
+                    count += 1;
+                    idx += phrase_len;
+                } else {
+                    break;
+                }
+            }
+            if count >= 3 {
+                return true;
+            }
+        }
+    }
+
+    // Word-level check: same word appears 80%+ of the time.
     let mut counts = std::collections::HashMap::new();
     for word in &words {
         *counts.entry(word).or_insert(0usize) += 1;
