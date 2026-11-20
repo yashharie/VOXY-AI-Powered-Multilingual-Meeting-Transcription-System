@@ -346,7 +346,19 @@ impl Pipeline {
             );
         }
 
-        let language_hint = config.language_hint.clone();
+        // Use translation target language as Whisper hint when auto-detect is set.
+        // If user selected "Translate into Sinhala", they are speaking Sinhala → force -l si.
+        // If user selected "Translate into Tamil", they are speaking Tamil → force -l ta.
+        let language_hint = if config.language_hint == "auto" {
+            match &config.translation_target_language {
+                Some(lang) if lang == "si" => "si".to_string(),
+                Some(lang) if lang == "ta" => "ta".to_string(),
+                _ => config.language_hint.clone(),
+            }
+        } else {
+            config.language_hint.clone()
+        };
+        tracing::info!(language_hint = %language_hint, "Whisper language hint resolved from translation target");
         let allowed_languages = config.allowed_languages.clone();
         let translation_target_language = config.translation_target_language.clone();
         let inference_session = session.clone();
