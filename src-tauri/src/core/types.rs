@@ -117,7 +117,9 @@ fn default_allowed_languages() -> Vec<String> {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            audio_source: AudioSource::Microphone, // Both causes CPU overload on base model
+            audio_source: AudioSource::Microphone,
+            // Use "auto" but restrict to supported languages via allowed_languages.
+            // Whisper will auto-detect within Tamil/Sinhala/English only.
             language_hint: "auto".to_string(),
             allowed_languages: default_allowed_languages(),
             enable_diarization: false,

@@ -326,7 +326,15 @@ impl WhisperEngine {
             .map_err(|e| AppError::Internal(format!("Failed to write temporary WAV: {e}")))?;
 
         let lang = if language_hint.is_empty() || language_hint == "auto" {
-            "auto"
+            // When auto-detect, prefer Tamil if it is in the allowed list.
+            // This prevents Whisper from mis-detecting Tamil as Hindi on ggml-base.
+            if allowed_languages.iter().any(|l| l == "ta") && allowed_languages.len() == 1 {
+                "ta"
+            } else if allowed_languages.iter().any(|l| l == "si") && allowed_languages.len() == 1 {
+                "si"
+            } else {
+                "auto"
+            }
         } else {
             language_hint
         };
