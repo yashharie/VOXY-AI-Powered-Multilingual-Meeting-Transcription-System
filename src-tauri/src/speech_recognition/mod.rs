@@ -195,17 +195,18 @@ impl WhisperEngine {
 
         let candidates = [
             hint.to_path_buf(),
-            // ggml-base is the minimum model for Tamil/Sinhala/English multilingual support.
-            // ggml-tiny is English-only and must not be used as the primary model.
-            exe_dir.join("models").join("ggml-base.bin"),
+            // ggml-small has significantly better Tamil/Sinhala accuracy than ggml-base.
             exe_dir.join("models").join("ggml-small.bin"),
-            exe_dir.join("ggml-base.bin"),
+            exe_dir.join("models").join("ggml-base.bin"),
             exe_dir.join("ggml-small.bin"),
-            PathBuf::from("models/ggml-base.bin"),
+            exe_dir.join("ggml-base.bin"),
             PathBuf::from("models/ggml-small.bin"),
-            PathBuf::from("src-tauri/models/ggml-base.bin"),
+            PathBuf::from("models/ggml-base.bin"),
             PathBuf::from("src-tauri/models/ggml-small.bin"),
+            PathBuf::from("src-tauri/models/ggml-base.bin"),
+            PathBuf::from("../models/ggml-small.bin"),
             PathBuf::from("../models/ggml-base.bin"),
+            PathBuf::from("../../models/ggml-small.bin"),
             PathBuf::from("../../models/ggml-base.bin"),
         ];
 
