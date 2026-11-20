@@ -338,6 +338,7 @@ impl WhisperEngine {
         } else {
             language_hint
         };
+        tracing::info!(lang, "Whisper language selected");
 
         // Keep CPU usage predictable on the target CPU-only Windows machines.
         // Override with VOXY_WHISPER_THREADS when benchmarking a specific device.
