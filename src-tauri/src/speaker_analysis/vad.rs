@@ -53,7 +53,7 @@ impl EnergyVad {
             cfg,
             carry: Vec::new(),
             clock: 0,
-            noise_floor: 0.003,
+            noise_floor: 0.020, // raised from 0.003 — prevents TV echo from opening a segment
             seg: None,
             silence_windows: 0,
         }

@@ -23,11 +23,9 @@ impl Default for VadConfig {
     fn default() -> Self {
         Self {
             threshold: 0.5,
-            min_speech_ms: 500,  // raised from 250 — reject short echo bursts
-            min_silence_ms: 600,
+            min_speech_ms: 600,
+            min_silence_ms: 400,  // close segment faster — less echo leaks in
             max_speech_ms: 30_000,
-            // Raised from 0.003 to 0.025 — log shows echo RMS ~0.003-0.011,
-            // direct speech RMS is typically 0.03+. This rejects speaker echo.
             energy_min_rms: 0.025,
             energy_noise_factor: 3.0,
         }
