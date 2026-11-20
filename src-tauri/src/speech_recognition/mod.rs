@@ -712,6 +712,53 @@ fn is_repetitive_hallucination(text: &str) -> bool {
         .collect();
 
     if words.len() < 7 {
+        // Word-level check needs 7+ words. But Tamil/Sinhala hallucinations
+        // often produce one long word with no spaces — check character repetition.
+        let chars: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
+        if chars.len() > 20 {
+            // Count max consecutive repetitions of any 3-char syllable.
+            let mut max_repeat = 1;
+            let mut current = 1;
+            for i in 1..chars.len() {
+                if chars[i] == chars[i - 1] {
+                    current += 1;
+                    if current > max_repeat {
+                        max_repeat = current;
+                    }
+                } else {
+                    current = 1;
+                }
+            }
+            if max_repeat > 10 {
+                return true;
+            }
+            // Also check if text is mostly one repeated substring.
+            let lower = text.to_lowercase();
+            let len = lower.chars().count();
+            if len > 30 {
+                for chunk_size in [3, 5, 8] {
+                    let pattern: String = lower.chars().take(chunk_size).collect();
+                    if pattern.chars().all(|c| c.is_alphabetic()) {
+                        let mut count = 0;
+                        let mut idx = 0;
+                        let pattern_len = pattern.chars().count();
+                        let total_chars = lower.chars().count();
+                        while idx + pattern_len <= total_chars {
+                            let window: String = lower.chars().skip(idx).take(pattern_len).collect();
+                            if window == pattern {
+                                count += 1;
+                                idx += pattern_len;
+                            } else {
+                                break;
+                            }
+                        }
+                        if count > 5 && count * pattern_len > len / 2 {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
         return false;
     }
 
